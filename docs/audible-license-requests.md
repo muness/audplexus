@@ -64,9 +64,11 @@ do not contact Audible.
 
 ## Observe requests
 
-At the normal Info log level, filter Diagnostics logs by component
-`audible_license`. The same JSON events are written to container logs and the
-rotating app log, when file logging is enabled.
+At the normal Info log level, look for license messages in Diagnostics logs.
+Expand a row to see component `audible_license` and its structured fields.
+Container logs and the rotating app log contain the same JSON events, so a
+log viewer can filter them by component. File logging must be enabled for the
+rotating app log.
 
 | `license_event` | Meaning |
 | --- | --- |
