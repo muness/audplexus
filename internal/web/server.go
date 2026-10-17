@@ -885,8 +885,7 @@ func (s *Server) getDashboardSummaryData(ctx context.Context) gin.H {
 
 	activeStatus := database.DownloadStatusActive
 	activeDownloads, _ := s.db.ListDownloads(ctx, &activeStatus)
-	pendingStatus := database.DownloadStatusPending
-	pendingDownloads, _ := s.db.ListDownloads(ctx, &pendingStatus)
+	pendingDownloads, _ := database.WaitingDownloads(ctx, s.db)
 
 	failedStatus := database.DownloadStatusFailed
 	failedDownloads, _ := s.db.ListDownloads(ctx, &failedStatus)
@@ -2007,8 +2006,7 @@ func (s *Server) handleDownloads(c *gin.Context) {
 
 	activeStatus := database.DownloadStatusActive
 	active, _ := s.db.ListDownloads(ctx, &activeStatus)
-	pendingStatus := database.DownloadStatusPending
-	pending, _ := s.db.ListDownloads(ctx, &pendingStatus)
+	pending, _ := database.WaitingDownloads(ctx, s.db)
 	completeStatus := database.DownloadStatusComplete
 	completeAll, _ := s.db.ListDownloads(ctx, &completeStatus)
 	failedStatus := database.DownloadStatusFailed
@@ -3323,8 +3321,7 @@ func (s *Server) handleCancelByASIN(c *gin.Context) {
 
 	cancelledRows := 0
 
-	pendingStatus := database.DownloadStatusPending
-	pendingRows, err := s.db.ListDownloads(ctx, &pendingStatus)
+	pendingRows, err := database.WaitingDownloads(ctx, s.db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

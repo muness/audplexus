@@ -31,6 +31,7 @@ type Database interface {
 	GetNextPendingDownload(ctx context.Context) (*DownloadQueue, error)
 	UpdateDownload(ctx context.Context, item *DownloadQueue) error
 	ListDownloads(ctx context.Context, status *DownloadStatus) ([]DownloadQueue, error)
+	ResumeDeferredDownload(ctx context.Context, id int64) error
 	CancelDownload(ctx context.Context, id int64) error
 	RetryDownload(ctx context.Context, id int64) error
 	RetryAllDownloads(ctx context.Context) (int64, error)

@@ -756,3 +756,5 @@ func (m *reconcileMockDB) DeleteSession(ctx context.Context, token string) error
 func (m *reconcileMockDB) DeleteSessionsForUser(ctx context.Context, userID int64) error          { return nil }
 func (m *reconcileMockDB) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) { return 0, nil }
 
+
+func (m *reconcileMockDB) ResumeDeferredDownload(ctx context.Context, id int64) error { return nil }

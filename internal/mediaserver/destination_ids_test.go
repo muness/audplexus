@@ -101,3 +101,4 @@ func (d *destinationIDsStubDB) TouchSession(ctx context.Context, token string, t
 func (d *destinationIDsStubDB) DeleteSession(ctx context.Context, token string) error { return nil }
 func (d *destinationIDsStubDB) DeleteSessionsForUser(ctx context.Context, userID int64) error { return nil }
 func (d *destinationIDsStubDB) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) { return 0, nil }
+func (d *destinationIDsStubDB) ResumeDeferredDownload(ctx context.Context, id int64) error { return nil }

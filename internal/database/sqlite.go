@@ -312,8 +312,8 @@ func (s *SQLiteDB) ListDownloads(ctx context.Context, status *DownloadStatus) ([
 
 func (s *SQLiteDB) CancelDownload(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE download_queue SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		DownloadStatusCancelled, time.Now(), id, DownloadStatusPending)
+		`UPDATE download_queue SET status = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)`,
+		DownloadStatusCancelled, time.Now(), id, DownloadStatusPending, DownloadStatusDeferred)
 	return err
 }
 
@@ -403,13 +403,13 @@ func (s *SQLiteDB) RetryAllDownloads(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	// Skip ASINs that already have a pending or active queue entry.
+	// Skip titles already queued, downloading, or waiting for Audible.
 	var toRetry []entry
 	for _, e := range entries {
 		var count int
 		_ = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM download_queue WHERE asin = ? AND status IN (?, ?)`,
-			e.asin, DownloadStatusPending, DownloadStatusActive).Scan(&count)
+			`SELECT COUNT(*) FROM download_queue WHERE asin = ? AND status IN (?, ?, ?)`,
+			e.asin, DownloadStatusPending, DownloadStatusActive, DownloadStatusDeferred).Scan(&count)
 		if count == 0 {
 			toRetry = append(toRetry, e)
 		}
@@ -1038,3 +1038,10 @@ func (s *SQLiteDB) DeleteExpiredSessions(ctx context.Context, now time.Time) (in
 	return res.RowsAffected()
 }
 
+
+func (s *SQLiteDB) ResumeDeferredDownload(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE download_queue SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		DownloadStatusPending, "", time.Now(), id, DownloadStatusDeferred)
+	return err
+}

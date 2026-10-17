@@ -233,3 +233,5 @@ func (s *settingsOnlyStubDB) DeleteSessionsForUser(ctx context.Context, userID i
 func (s *settingsOnlyStubDB) DeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
 	return 0, nil
 }
+
+func (s *settingsOnlyStubDB) ResumeDeferredDownload(ctx context.Context, id int64) error { return nil }

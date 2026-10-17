@@ -296,8 +296,8 @@ func (p *PostgresDB) ListDownloads(ctx context.Context, status *DownloadStatus) 
 
 func (p *PostgresDB) CancelDownload(ctx context.Context, id int64) error {
 	_, err := p.db.ExecContext(ctx,
-		`UPDATE download_queue SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4`,
-		DownloadStatusCancelled, time.Now(), id, DownloadStatusPending)
+		`UPDATE download_queue SET status = $1, updated_at = $2 WHERE id = $3 AND status IN ($4, $5)`,
+		DownloadStatusCancelled, time.Now(), id, DownloadStatusPending, DownloadStatusDeferred)
 	return err
 }
 
@@ -387,8 +387,8 @@ func (p *PostgresDB) RetryAllDownloads(ctx context.Context) (int64, error) {
 	for _, e := range entries {
 		var count int
 		_ = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM download_queue WHERE asin = $1 AND status IN ($2, $3)`,
-			e.asin, DownloadStatusPending, DownloadStatusActive).Scan(&count)
+			`SELECT COUNT(*) FROM download_queue WHERE asin = $1 AND status IN ($2, $3, $4)`,
+			e.asin, DownloadStatusPending, DownloadStatusActive, DownloadStatusDeferred).Scan(&count)
 		if count == 0 {
 			toRetry = append(toRetry, e)
 		}
@@ -995,4 +995,11 @@ func (p *PostgresDB) DeleteExpiredSessions(ctx context.Context, now time.Time) (
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (p *PostgresDB) ResumeDeferredDownload(ctx context.Context, id int64) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE download_queue SET status = $1, error = $2, updated_at = $3 WHERE id = $4 AND status = $5`,
+		DownloadStatusPending, "", time.Now(), id, DownloadStatusDeferred)
+	return err
 }

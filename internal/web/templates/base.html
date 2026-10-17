@@ -854,6 +854,18 @@
                 adj('stat-failed-dl', 1);
             }
 
+            if (d.type === 'deferred') {
+                adjActive(-1);
+                adj('stat-pending-dl', 1);
+                adj('pending-count', 1);
+                clearStageRateState(d.asin);
+                var deferredCard = document.getElementById('pipe-' + d.asin);
+                if (deferredCard) deferredCard.remove();
+                var deferredStatus = document.getElementById('dl-status');
+                if (deferredStatus) deferredStatus.textContent = d.error || 'Waiting for Audible';
+                if (window.htmx) htmx.trigger(document.body, 'license:deferred');
+            }
+
             // --- Library row status badge updates ---
             var badge = document.getElementById('status-book-' + d.book_id);
             if (badge) {

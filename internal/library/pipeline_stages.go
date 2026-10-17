@@ -247,10 +247,7 @@ func (dm *DownloadManager) handleDownloadStage(ctx context.Context, item *databa
 		case ctx.Err() == nil && errors.Is(err, context.Canceled):
 			err = fmt.Errorf("cancelled by user")
 		}
-		asinLog.Error().Err(err).Msg("download failed")
-		writer.Cleanup()
-		dm.cleanupDownloadFiles(item.ASIN)
-		dm.failItem(ctx, item, bookTitle, err)
+		dm.handleDownloadFailure(ctx, item, bookTitle, writer, err)
 		return
 	}
 	elapsed := time.Since(downloadStart)

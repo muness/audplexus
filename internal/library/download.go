@@ -82,6 +82,7 @@ type DownloadManager struct {
 	decryptQueue chan *pipelineItem
 	processQueue chan *pipelineItem
 
+	resumeMu sync.Mutex
 	mu       sync.Mutex
 	running  bool
 	stopCh   chan struct{}
@@ -521,8 +522,7 @@ func (dm *DownloadManager) emit(event DownloadEvent) {
 
 // PipelineSnapshot builds a runtime view of worker pools, active items, and waiting queues.
 func (dm *DownloadManager) PipelineSnapshot(ctx context.Context) PipelineSnapshot {
-	pendingStatus := database.DownloadStatusPending
-	pending, _ := dm.db.ListDownloads(ctx, &pendingStatus)
+	pending, _ := database.WaitingDownloads(ctx, dm.db)
 
 	pendingItems := make([]PipelineStateItem, 0, len(pending))
 	for _, p := range pending {
@@ -666,7 +666,7 @@ func (dm *DownloadManager) updatePipelineState(event DownloadEvent) {
 	}
 
 	switch event.Type {
-	case "failed", "complete", "cancelled":
+	case "failed", "complete", "cancelled", "deferred":
 		clear()
 		return
 	}
@@ -899,6 +899,7 @@ func (dm *DownloadManager) downloadWorker(ctx context.Context, workerID int) {
 			log.Info().Msg("download worker stopping: stop signal")
 			return
 		default:
+			dm.resumeDownloadsAfterCooldown(ctx)
 			// Get next pending download from database
 			item, err := dm.db.GetNextPendingDownload(ctx)
 			if err != nil {
@@ -964,6 +965,9 @@ func (dm *DownloadManager) processWorker(ctx context.Context, workerID int) {
 
 // failItem marks both the download queue entry and book as failed.
 func (dm *DownloadManager) failItem(ctx context.Context, item *database.DownloadQueue, title string, err error) {
+	if dm.deferForLicenseCooldown(ctx, item, title, err) {
+		return
+	}
 	now := time.Now()
 	item.Status = database.DownloadStatusFailed
 	item.Error = err.Error()
@@ -1200,6 +1204,7 @@ func (dm *DownloadManager) cleanupOrphanedFiles(ctx context.Context) {
 
 	for _, status := range []database.DownloadStatus{
 		database.DownloadStatusPending,
+		database.DownloadStatusDeferred,
 		database.DownloadStatusActive,
 		database.DownloadStatusReorganize,
 		database.DownloadStatusReorganizing,
@@ -1329,6 +1334,7 @@ func (dm *DownloadManager) RefillQueue(ctx context.Context, queueLimit int) erro
 	var activeCount int
 	for _, status := range []database.DownloadStatus{
 		database.DownloadStatusPending,
+		database.DownloadStatusDeferred,
 		database.DownloadStatusActive,
 		database.DownloadStatusReorganize,
 		database.DownloadStatusReorganizing,

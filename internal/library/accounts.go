@@ -3,7 +3,9 @@ package library
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mstrhakr/audplexus/internal/crypto"
@@ -28,10 +30,12 @@ type AccountManager struct {
 	// always provides one.
 	box *crypto.Box
 
-	mu      sync.RWMutex
-	clients map[string]*audible.Client // keyed by account id
-	names   map[string]string          // display names, keyed by account id
-	order   []string                   // account ids in stable creation order
+	mu              sync.RWMutex
+	clients         map[string]*audible.Client // keyed by account id
+	names           map[string]string          // display names, keyed by account id
+	licenses        map[string]*licenseTransport
+	accountLicenses map[string]*licenseTransport
+	order           []string // account ids in stable creation order
 }
 
 // NewAccountManager builds a manager and loads all enabled accounts from the
@@ -115,7 +119,33 @@ func (m *AccountManager) buildAccountClient(a *database.AudibleAccount) (*audibl
 			return nil, fmt.Errorf("unmarshal credentials: %w", err)
 		}
 	}
-	return client, nil
+
+	identity := mp.CountryCode + ":" + a.ID
+	if a.CustomerID != "" {
+		identity = mp.CountryCode + ":" + a.CustomerID
+	}
+	if creds := client.GetCredentials(); creds != nil && creds.CustomerID != "" {
+		identity = mp.CountryCode + ":" + creds.CustomerID
+	}
+	m.mu.Lock()
+	if m.licenses == nil {
+		m.licenses = make(map[string]*licenseTransport)
+	}
+	transport := m.licenses[identity]
+	if transport == nil {
+		transport = newLicenseTransport(m.db, identity, http.DefaultTransport)
+		m.licenses[identity] = transport
+	}
+	if m.accountLicenses == nil {
+		m.accountLicenses = make(map[string]*licenseTransport)
+	}
+	m.accountLicenses[a.ID] = transport
+	m.mu.Unlock()
+	guarded := audible.NewClientWithHTTP(mp, &http.Client{Transport: transport, Timeout: 30 * time.Second})
+	if creds := client.GetCredentials(); creds != nil {
+		guarded.SetCredentials(creds)
+	}
+	return guarded, nil
 }
 
 // ClientForAccount returns the client for a specific account id, or nil if the
@@ -247,3 +277,26 @@ func (m *AccountManager) PersistClientCredentials(ctx context.Context, accountID
 // NewAccountID returns a fresh account id. Exposed so the web layer creating a
 // pending account and the manager agree on id shape.
 func NewAccountID() string { return uuid.NewString() }
+
+// licenseCooldownForBook uses the same account selection as the download worker.
+func (m *AccountManager) licenseCooldownForBook(ctx context.Context, asin string) (time.Time, error) {
+	client := m.ClientForBook(ctx, asin)
+	m.mu.RLock()
+	var transport *licenseTransport
+	for id, c := range m.clients {
+		if c != client {
+			continue
+		}
+		transport = m.accountLicenses[id]
+		break
+	}
+	m.mu.RUnlock()
+	if transport == nil {
+		return time.Time{}, nil
+	}
+	cooldown, err := transport.cooldown(ctx)
+	if err != nil || !transport.now().Before(cooldown.Until) {
+		return time.Time{}, err
+	}
+	return cooldown.Until, nil
+}
