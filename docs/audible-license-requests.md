@@ -61,3 +61,30 @@ This change reduces speculative requests and repeated attempts during a known
 cooldown. It does not establish Audible's rate limit or clear a throttle that
 Audible has already applied. Tests use synthetic accounts and responses; they
 do not contact Audible.
+
+## Observe requests
+
+At the normal Info log level, filter Diagnostics logs by component
+`audible_license`. The same JSON events are written to container logs and the
+rotating app log, when file logging is enabled.
+
+| `license_event` | Meaning |
+| --- | --- |
+| `request_sent` | A license POST reached the upstream transport. |
+| `request_result` | The response was granted, denied, throttled, unknown, or failed to read. |
+| `shared` | A concurrent caller joined an existing request. |
+| `denial_cache_hit` | A recent denial answered the request without a new POST. |
+| `cooldown_started` | Throttling set or extended the next allowed attempt. |
+| `cooldown_skip` | The account cooldown prevented a POST. |
+| `cooldown_cleared` | A granted license cleared the previous backoff. |
+
+`account_key` is a stable hash used to correlate an account's events. Logs omit
+ADP tokens, request signatures, URLs, response bodies, and license keys. No raw
+Audible debug logging is needed.
+
+To check sync, use an idle download queue and compare the sync start and finish
+timestamps: there should be no `request_sent` events in that interval. Active
+downloads can legitimately request licenses during a sync. Default ASIN lookups
+should also produce no license events. For a throttled download, expect one
+`request_sent`, a throttled result, and `cooldown_started`; later attempts before
+`retry_after` should show `cooldown_skip` without another `request_sent`.
