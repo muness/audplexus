@@ -26,9 +26,12 @@ func issueForDownload(item database.DownloadQueue) downloadIssue {
 	if item.Status != database.DownloadStatusDeferred {
 		return issue
 	}
-	issue.Label = "Waiting for Audible — account throttled"
+	issue.Label = "Waiting — license requests paused"
 	issue.Deferred = true
-	issue.Message = "Audible is throttling download licenses (CustomerThrottled)."
+	issue.Message = "Audible returned CustomerThrottled for this device registration. Reconnecting may help."
+	if strings.Contains(item.Error, "HTTP 429") {
+		issue.Message = "Audible returned HTTP 429. Audplexus paused license requests for this customer."
+	}
 	const prefix = "Retry after "
 	if _, value, ok := strings.Cut(item.Error, prefix); ok {
 		if until, err := time.Parse(time.RFC3339, strings.TrimSpace(value)); err == nil {

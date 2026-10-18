@@ -18,7 +18,7 @@ func TestLicenseLogsDistinguishNetworkRequestsFromCooldownSkipsWithoutSecrets(t 
 	counts := map[string]int{}
 	for _, entry := range logging.TailLogs(50) {
 		parsed := logging.ParseLogLine(entry.Line)
-		if parsed.Component != "audible_license" || parsed.Fields["account_key"] != transport.cooldownKey {
+		if parsed.Component != "audible_license" || parsed.Fields["account_key"] != transport.rateLimitKey || parsed.Fields["registration_key"] != transport.cooldownKey {
 			continue
 		}
 		for _, secret := range []string{"synthetic-private-customer", "synthetic-private-token", "synthetic-private-license", "licenserequest", "api.example.test"} {

@@ -125,7 +125,7 @@
         <div class="sidebar-footer">
             <span id="system-health-dot" class="health-dot{{if not $sb.Healthy}} health-dot-warn{{end}}"></span>
             <div class="meta">
-                <strong id="system-health-label">{{if gt $sb.ThrottledAccounts 0}}Audible account throttled{{else if gt $sb.FailedDownloads 0}}Downloads need attention{{else if $sb.StatusUnavailable}}Download status unavailable{{else if $sb.Healthy}}All systems operational{{else if gt $sb.FailedDestAlert 0}}Destination issues{{else}}Audible not connected{{end}}</strong>
+                <strong id="system-health-label">{{if gt $sb.PausedAudibleAccounts 0}}Audible downloads paused{{else if gt $sb.FailedDownloads 0}}Downloads need attention{{else if $sb.StatusUnavailable}}Download status unavailable{{else if $sb.Healthy}}All systems operational{{else if gt $sb.FailedDestAlert 0}}Destination issues{{else}}Audible not connected{{end}}</strong>
                 {{$sb.Version}} · uptime {{$sb.Uptime}}
             </div>
         </div>
@@ -307,11 +307,12 @@
             var status = document.getElementById('audible-account-status');
             if (!status || status.querySelector('[data-status-unavailable]')) return;
             var cooldowns = {};
-            status.querySelectorAll('[data-throttled-account]').forEach(function(el) { cooldowns[el.getAttribute('data-throttled-account')] = el.getAttribute('data-retry-until'); });
+            status.querySelectorAll('[data-paused-account]').forEach(function(el) { cooldowns[el.getAttribute('data-paused-account')] = {until: el.getAttribute('data-retry-until'), message: el.getAttribute('data-license-message')}; });
             document.querySelectorAll('[data-account-cooldown]').forEach(function(el) {
-                var until = cooldowns[el.getAttribute('data-account-cooldown')];
+                var pause = cooldowns[el.getAttribute('data-account-cooldown')];
+                var until = pause && pause.until;
                 el.hidden = !until;
-                el.innerHTML = until ? '<strong>Account throttled</strong><div>Automatic retry: <time data-local-time datetime="' + escHTML(until) + '">' + escHTML(until) + '</time>. Signing in again does not clear the cooldown.</div>' : '';
+                el.innerHTML = until ? '<strong>License requests paused</strong><div>Automatic retry: <time data-local-time datetime="' + escHTML(until) + '">' + escHTML(until) + '</time>. ' + escHTML(pause.message || '') + '</div>' : '';
                 localizeRetryTimes(el);
             });
         }
@@ -319,7 +320,8 @@
         function downloadIssueHTML(message, deferred, accountName) {
             if (!deferred) return '<strong>Download failed</strong><div>' + escHTML(message || 'No error details were saved.') + '</div>';
             var parts = String(message || '').split('Retry after ');
-            var html = '<strong>Waiting for Audible — account throttled</strong><div>Audible is throttling download licenses (CustomerThrottled).</div>';
+            var pauseMessage = (message || '').indexOf('HTTP 429') !== -1 ? 'Audible returned HTTP 429. Audplexus paused license requests for this customer.' : 'Audible returned CustomerThrottled for this device registration. Reconnecting may help.';
+            var html = '<strong>Waiting — license requests paused</strong><div>' + escHTML(pauseMessage) + '</div>';
             if (accountName) html += '<div>Account: ' + escHTML(accountName) + '</div>';
             if (parts.length > 1) {
                 var date = new Date(parts[1].trim());
@@ -342,7 +344,7 @@
         }
 
         function stageLabel(stage) {
-            if (stage === 'deferred') return 'Throttled';
+            if (stage === 'deferred') return 'Paused';
             if (stage === 'moving') return 'moving file';
             if (stage === 'finalizing') return 'finalizing';
             if (stage === 'waiting_decrypt') return 'waiting for decrypt worker';

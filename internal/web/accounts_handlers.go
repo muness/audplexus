@@ -16,13 +16,14 @@ import (
 // accountView is the per-account view-model for the Settings UI. Credentials
 // are never exposed; only an Authenticated flag derived from their presence.
 type accountView struct {
-	ID            string
-	DisplayName   string
-	Marketplace   string
-	Authenticated bool
-	Enabled       bool
-	IsPrimary     bool
-	ThrottledUntil time.Time
+	ID                  string
+	DisplayName         string
+	Marketplace         string
+	Authenticated       bool
+	Enabled             bool
+	IsPrimary           bool
+	LicensePausedUntil  time.Time
+	LicensePauseMessage string
 }
 
 // accountsForView returns every account for the Settings page, ordered with the
@@ -39,20 +40,23 @@ func (s *Server) accountsForView(ctx context.Context) []accountView {
 	}
 	cooldowns, _ := s.audibleLicenseCooldowns(ctx)
 	until := make(map[string]time.Time, len(cooldowns))
+	messages := make(map[string]string, len(cooldowns))
 	for _, cooldown := range cooldowns {
 		until[cooldown.AccountID] = cooldown.Until
+		messages[cooldown.AccountID] = cooldown.Message
 	}
 	out := make([]accountView, 0, len(rows))
 	for i := range rows {
 		r := rows[i]
 		out = append(out, accountView{
-			ID:            r.ID,
-			ThrottledUntil: until[r.ID],
-			DisplayName:   accountDisplayName(&r),
-			Marketplace:   r.Marketplace,
-			Authenticated: r.HasCredentials(),
-			Enabled:       r.Enabled,
-			IsPrimary:     r.ID == primaryID,
+			ID:                  r.ID,
+			LicensePausedUntil:  until[r.ID],
+			LicensePauseMessage: messages[r.ID],
+			DisplayName:         accountDisplayName(&r),
+			Marketplace:         r.Marketplace,
+			Authenticated:       r.HasCredentials(),
+			Enabled:             r.Enabled,
+			IsPrimary:           r.ID == primaryID,
 		})
 	}
 	return out

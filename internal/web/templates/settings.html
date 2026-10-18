@@ -46,7 +46,7 @@
         <div class="card">
             <div class="card-head"><h3>Audible Account</h3></div>
             {{range .Accounts}}{{if .IsPrimary}}
-            <div class="download-issue" role="status" data-account-cooldown="{{.ID}}" {{if .ThrottledUntil.IsZero}}hidden{{end}}><strong>{{.DisplayName}}: account throttled</strong><div>Automatic retry <time data-local-time datetime="{{.ThrottledUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.ThrottledUntil.UTC.Format "Jan 2, 15:04 MST"}}</time>. Signing in again does not clear the cooldown.</div></div>
+            <div class="download-issue" role="status" data-account-cooldown="{{.ID}}" {{if .LicensePausedUntil.IsZero}}hidden{{end}}><strong>{{.DisplayName}}: license requests paused</strong><div>Automatic retry <time data-local-time datetime="{{.LicensePausedUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.LicensePausedUntil.UTC.Format "Jan 2, 15:04 MST"}}</time>. {{.LicensePauseMessage}}</div></div>
             {{end}}{{end}}
 
             <form method="POST" action="/auth/marketplace">
@@ -93,7 +93,7 @@
                 <div class="account-row" style="display:flex;align-items:center;gap:.75rem;padding:.6rem 0;border-bottom:1px solid var(--border)">
                     <div style="flex:1">
                         <strong>{{.DisplayName}}</strong>
-                        <div class="download-issue" data-account-cooldown="{{.ID}}" {{if .ThrottledUntil.IsZero}}hidden{{end}}><strong>Account throttled</strong><div>Automatic retry <time data-local-time datetime="{{.ThrottledUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.ThrottledUntil.UTC.Format "Jan 2, 15:04 MST"}}</time>.</div></div>
+                        <div class="download-issue" data-account-cooldown="{{.ID}}" {{if .LicensePausedUntil.IsZero}}hidden{{end}}><strong>License requests paused</strong><div>Automatic retry <time data-local-time datetime="{{.LicensePausedUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.LicensePausedUntil.UTC.Format "Jan 2, 15:04 MST"}}</time>.</div></div>
                         {{if .IsPrimary}}<span class="badge" style="font-size:.7rem">primary</span>{{end}}
                         <div class="muted" style="font-size:.8rem">
                             Region: {{.Marketplace}} ·

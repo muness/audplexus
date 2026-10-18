@@ -30,15 +30,26 @@ type licenseSettings interface {
 }
 
 // LicenseCooldownError reports when another license request may be attempted.
-type LicenseCooldownError struct{ Until time.Time }
+type LicenseCooldownError struct {
+	Until  time.Time
+	Reason string
+}
+
+func licensePauseMessage(reason string) string {
+	if reason == "http_429" {
+		return "Audible returned HTTP 429. Audplexus paused license requests for this customer."
+	}
+	return "Audible returned CustomerThrottled for this device registration. Audplexus paused its license requests; reconnecting may help."
+}
 
 func (e *LicenseCooldownError) Error() string {
-	return "Audible is throttling download licenses (CustomerThrottled). Retry after " + e.Until.UTC().Format(time.RFC3339)
+	return licensePauseMessage(e.Reason) + " Retry after " + e.Until.UTC().Format(time.RFC3339)
 }
 
 type licenseCooldown struct {
-	Until time.Time     `json:"until"`
-	Delay time.Duration `json:"delay"`
+	Reason string        `json:"reason"`
+	Until  time.Time     `json:"until"`
+	Delay  time.Duration `json:"delay"`
 }
 
 type licenseReply struct {
@@ -65,14 +76,23 @@ type deniedLicense struct {
 	until time.Time
 }
 
+// customerLicenseGate serializes requests across registrations for one customer.
+// HTTP 429 pauses are shared even if saving the pause fails.
+type customerLicenseGate struct {
+	permit        chan struct{}
+	mu            sync.Mutex
+	localCooldown licenseCooldown
+}
+
 // licenseTransport guards only license POSTs. Library reads and CDN transfers
 // use the underlying transport without waiting for the license permit.
 type licenseTransport struct {
 	settings      licenseSettings
 	cooldownKey   string
+	rateLimitKey  string
+	customer      *customerLicenseGate
 	base          http.RoundTripper
 	now           func() time.Time
-	permit        chan struct{}
 	mu            sync.Mutex
 	calls         map[string]*licenseCall
 	denied        map[string]deniedLicense
@@ -80,34 +100,61 @@ type licenseTransport struct {
 }
 
 func newLicenseTransport(settings licenseSettings, identity string, base http.RoundTripper) *licenseTransport {
+	return newRegistrationLicenseTransport(settings, identity, identity, base, &customerLicenseGate{permit: make(chan struct{}, 1)})
+}
+
+func newRegistrationLicenseTransport(settings licenseSettings, customer, registration string, base http.RoundTripper, gate *customerLicenseGate) *licenseTransport {
 	return &licenseTransport{
-		settings:    settings,
-		cooldownKey: fmt.Sprintf("audible_license_cooldown_%x", sha256.Sum256([]byte(identity))),
-		base:        base,
-		now:         time.Now,
-		permit:      make(chan struct{}, 1),
-		calls:       make(map[string]*licenseCall),
-		denied:      make(map[string]deniedLicense),
+		customer:     gate,
+		rateLimitKey: fmt.Sprintf("audible_license_http429_%x", sha256.Sum256([]byte(customer))),
+		settings:     settings,
+		cooldownKey:  fmt.Sprintf("audible_license_registration_%x", sha256.Sum256([]byte(registration))),
+		base:         base,
+		now:          time.Now,
+		calls:        make(map[string]*licenseCall),
+		denied:       make(map[string]deniedLicense),
 	}
 }
 
-func (t *licenseTransport) cooldown(ctx context.Context) (licenseCooldown, error) {
-	raw, err := t.settings.GetSetting(ctx, t.cooldownKey)
+func (t *licenseTransport) savedCooldown(ctx context.Context, key string) (licenseCooldown, error) {
+	raw, err := t.settings.GetSetting(ctx, key)
 	if err != nil {
-		return licenseCooldown{}, fmt.Errorf("read Audible license cooldown: %w", err)
+		return licenseCooldown{}, fmt.Errorf("read Audible license pause: %w", err)
 	}
-	var cooldown licenseCooldown
+	var pause licenseCooldown
 	if raw != "" {
-		if err := json.Unmarshal([]byte(raw), &cooldown); err != nil {
-			return cooldown, fmt.Errorf("read Audible license cooldown: %w", err)
+		if err := json.Unmarshal([]byte(raw), &pause); err != nil {
+			return pause, fmt.Errorf("read Audible license pause: %w", err)
 		}
 	}
+	return pause, nil
+}
+
+func (t *licenseTransport) cooldown(ctx context.Context) (licenseCooldown, error) {
+	registration, err := t.savedCooldown(ctx, t.cooldownKey)
+	if err != nil {
+		return registration, err
+	}
+	customer, err := t.savedCooldown(ctx, t.rateLimitKey)
+	if err != nil {
+		return customer, err
+	}
 	t.mu.Lock()
-	if t.localCooldown.Until.After(cooldown.Until) {
-		cooldown = t.localCooldown
+	if t.localCooldown.Until.After(registration.Until) {
+		registration = t.localCooldown
 	}
 	t.mu.Unlock()
-	return cooldown, nil
+	t.customer.mu.Lock()
+	if t.customer.localCooldown.Until.After(customer.Until) {
+		customer = t.customer.localCooldown
+	}
+	t.customer.mu.Unlock()
+	// Keep expired backoff for the next refusal of the same kind, but an active
+	// pause always wins over an expired one.
+	if customer.Until.After(registration.Until) {
+		return customer, nil
+	}
+	return registration, nil
 }
 
 func (t *licenseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -124,12 +171,12 @@ func (t *licenseTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		req.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	// Credential changes invalidate title denials, but not the account cooldown.
+	// Token changes invalidate title denials. Registration identity scopes the refusal pause.
 	key := fmt.Sprintf("%s|%x|%x", req.URL.String(), sha256.Sum256([]byte(req.Header.Get("x-adp-token"))), sha256.Sum256(body))
 	t.mu.Lock()
 	if call, ok := t.calls[key]; ok {
 		t.mu.Unlock()
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "shared").Msg("concurrent Audible license request shared")
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "shared").Msg("concurrent Audible license request shared")
 		select {
 		case <-req.Context().Done():
 			return nil, req.Context().Err()
@@ -159,18 +206,18 @@ func (t *licenseTransport) requestLicense(req *http.Request, key string) (*licen
 		return nil, err
 	}
 	select {
-	case t.permit <- struct{}{}:
+	case t.customer.permit <- struct{}{}:
 	case <-req.Context().Done():
 		return nil, req.Context().Err()
 	}
-	defer func() { <-t.permit }()
+	defer func() { <-t.customer.permit }()
 	cooldown, err := t.cooldown(req.Context())
 	if err != nil {
 		return nil, err
 	}
 	if t.now().Before(cooldown.Until) {
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "cooldown_skip").Time("retry_after", cooldown.Until).Msg("Audible license request skipped during cooldown")
-		return nil, &LicenseCooldownError{Until: cooldown.Until}
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "cooldown_skip").Str("reason", cooldown.Reason).Time("retry_after", cooldown.Until).Msg("Audible license request skipped during cooldown")
+		return nil, &LicenseCooldownError{Until: cooldown.Until, Reason: cooldown.Reason}
 	}
 	for cachedKey, cached := range t.denied {
 		if !t.now().Before(cached.until) {
@@ -178,20 +225,20 @@ func (t *licenseTransport) requestLicense(req *http.Request, key string) (*licen
 		}
 	}
 	if cached, ok := t.denied[key]; ok {
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "denial_cache_hit").Msg("cached Audible license denial reused")
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "denial_cache_hit").Msg("cached Audible license denial reused")
 		return cached.reply, nil
 	}
 	started := time.Now()
-	licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "request_sent").Msg("Audible license request sent")
+	licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "request_sent").Msg("Audible license request sent")
 	response, err := t.base.RoundTrip(req)
 	if err != nil {
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "request_result").Str("result", "transport_error").Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "request_result").Str("result", "transport_error").Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
 		return nil, err
 	}
 	body, err := io.ReadAll(response.Body)
 	response.Body.Close()
 	if err != nil {
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "request_result").Str("result", "response_read_error").Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "request_result").Str("result", "response_read_error").Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
 		return nil, err
 	}
 	reply := &licenseReply{response: *response, body: body}
@@ -210,16 +257,31 @@ func (t *licenseTransport) requestLicense(req *http.Request, key string) (*licen
 		throttled = throttled || strings.EqualFold(reason.Code, "CustomerThrottled")
 	}
 	resultName := "unknown"
-	if throttled {
-		resultName = "throttled"
+	if response.StatusCode == http.StatusTooManyRequests {
+		resultName = "http_429"
+	} else if throttled {
+		resultName = "customer_throttled"
 	} else if strings.EqualFold(result.License.Status, "Granted") {
 		resultName = "granted"
 	} else if strings.EqualFold(result.License.Status, "Denied") {
 		resultName = "denied"
 	}
-	licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "request_result").Str("result", resultName).Int("http_status", response.StatusCode).Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
+	licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "request_result").Str("result", resultName).Int("http_status", response.StatusCode).Dur("elapsed", time.Since(started)).Msg("Audible license request finished")
 	if throttled {
-		delay := cooldown.Delay * 2
+		reason := "customer_throttled"
+		pauseKey := t.cooldownKey
+		if response.StatusCode == http.StatusTooManyRequests {
+			reason = "http_429"
+			pauseKey = t.rateLimitKey
+		}
+		previous, err := t.savedCooldown(req.Context(), pauseKey)
+		if err != nil {
+			return nil, err
+		}
+		if cooldown.Reason == reason && cooldown.Delay > previous.Delay {
+			previous = cooldown
+		}
+		delay := previous.Delay * 2
 		if delay < firstLicenseCooldown {
 			delay = firstLicenseCooldown
 		}
@@ -232,29 +294,40 @@ func (t *licenseTransport) requestLicense(req *http.Request, key string) (*licen
 		if until, parseErr := http.ParseTime(response.Header.Get("Retry-After")); parseErr == nil && until.Sub(t.now()) > delay {
 			delay = until.Sub(t.now())
 		}
-		cooldown = licenseCooldown{Until: t.now().Add(delay), Delay: delay}
-		licenseLog.Warn().Str("account_key", t.cooldownKey).Str("license_event", "cooldown_started").Time("retry_after", cooldown.Until).Dur("delay", delay).Msg("Audible license cooldown started")
-		t.mu.Lock()
-		t.localCooldown = cooldown
-		t.mu.Unlock()
+		cooldown = licenseCooldown{Until: t.now().Add(delay), Delay: delay, Reason: reason}
+		licenseLog.Warn().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "cooldown_started").Str("reason", reason).Time("retry_after", cooldown.Until).Dur("delay", delay).Msg("Audible license cooldown started")
+		if reason == "http_429" {
+			t.customer.mu.Lock()
+			t.customer.localCooldown = cooldown
+			t.customer.mu.Unlock()
+		} else {
+			t.mu.Lock()
+			t.localCooldown = cooldown
+			t.mu.Unlock()
+		}
 		raw, _ := json.Marshal(cooldown)
 		// Keep the stop in effect even if the database write fails.
-		if err := t.settings.SetSetting(req.Context(), t.cooldownKey, string(raw)); err != nil {
-			return nil, errors.Join(&LicenseCooldownError{Until: cooldown.Until}, fmt.Errorf("save Audible license cooldown: %w", err))
+		if err := t.settings.SetSetting(req.Context(), pauseKey, string(raw)); err != nil {
+			return nil, errors.Join(&LicenseCooldownError{Until: cooldown.Until, Reason: cooldown.Reason}, fmt.Errorf("save Audible license cooldown: %w", err))
 		}
-		return nil, &LicenseCooldownError{Until: cooldown.Until}
+		return nil, &LicenseCooldownError{Until: cooldown.Until, Reason: cooldown.Reason}
 	}
 	if strings.EqualFold(result.License.Status, "Denied") {
 		t.denied[key] = deniedLicense{reply: reply, until: t.now().Add(deniedLicenseTTL)}
 	}
 	if strings.EqualFold(result.License.Status, "Granted") && cooldown.Delay > 0 {
-		if err := t.settings.SetSetting(req.Context(), t.cooldownKey, ""); err != nil {
-			return nil, fmt.Errorf("clear Audible license cooldown: %w", err)
+		for _, key := range []string{t.cooldownKey, t.rateLimitKey} {
+			if err := t.settings.SetSetting(req.Context(), key, ""); err != nil {
+				return nil, fmt.Errorf("clear Audible license pause: %w", err)
+			}
 		}
+		t.customer.mu.Lock()
+		t.customer.localCooldown = licenseCooldown{}
+		t.customer.mu.Unlock()
 		t.mu.Lock()
 		t.localCooldown = licenseCooldown{}
 		t.mu.Unlock()
-		licenseLog.Info().Str("account_key", t.cooldownKey).Str("license_event", "cooldown_cleared").Msg("Audible license cooldown cleared after a grant")
+		licenseLog.Info().Str("account_key", t.rateLimitKey).Str("registration_key", t.cooldownKey).Str("license_event", "cooldown_cleared").Msg("Audible license cooldown cleared after a grant")
 	}
 	return reply, nil
 }

@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"sync"
@@ -30,12 +31,13 @@ type AccountManager struct {
 	// always provides one.
 	box *crypto.Box
 
-	mu              sync.RWMutex
-	clients         map[string]*audible.Client // keyed by account id
-	names           map[string]string          // display names, keyed by account id
-	licenses        map[string]*licenseTransport
-	accountLicenses map[string]*licenseTransport
-	order           []string // account ids in stable creation order
+	mu               sync.RWMutex
+	clients          map[string]*audible.Client // keyed by account id
+	names            map[string]string          // display names, keyed by account id
+	licenses         map[string]*licenseTransport
+	licenseCustomers map[string]*customerLicenseGate
+	accountLicenses  map[string]*licenseTransport
+	order            []string // account ids in stable creation order
 }
 
 // NewAccountManager builds a manager and loads all enabled accounts from the
@@ -127,14 +129,33 @@ func (m *AccountManager) buildAccountClient(a *database.AudibleAccount) (*audibl
 	if creds := client.GetCredentials(); creds != nil && creds.CustomerID != "" {
 		identity = mp.CountryCode + ":" + creds.CustomerID
 	}
+	registration := identity + ":unregistered"
+	if creds := client.GetCredentials(); creds != nil {
+		device := creds.DeviceInfo
+		if device.DeviceSerialNumber != "" {
+			registration = fmt.Sprintf("%s:%s:%s", identity, device.DeviceType, device.DeviceSerialNumber)
+		} else {
+			// Older credentials can lack device_info. Use the registration's
+			// ADP token, never the bearer access token that changes on refresh.
+			registration = fmt.Sprintf("%s:legacy:%x", identity, sha256.Sum256([]byte(creds.ADPToken)))
+		}
+	}
 	m.mu.Lock()
+	if m.licenseCustomers == nil {
+		m.licenseCustomers = make(map[string]*customerLicenseGate)
+	}
+	gate := m.licenseCustomers[identity]
+	if gate == nil {
+		gate = &customerLicenseGate{permit: make(chan struct{}, 1)}
+		m.licenseCustomers[identity] = gate
+	}
 	if m.licenses == nil {
 		m.licenses = make(map[string]*licenseTransport)
 	}
-	transport := m.licenses[identity]
+	transport := m.licenses[registration]
 	if transport == nil {
-		transport = newLicenseTransport(m.db, identity, http.DefaultTransport)
-		m.licenses[identity] = transport
+		transport = newRegistrationLicenseTransport(m.db, identity, registration, http.DefaultTransport, gate)
+		m.licenses[registration] = transport
 	}
 	if m.accountLicenses == nil {
 		m.accountLicenses = make(map[string]*licenseTransport)
@@ -306,6 +327,8 @@ type AccountLicenseCooldown struct {
 	AccountID   string    `json:"account_id"`
 	AccountName string    `json:"account_name"`
 	Until       time.Time `json:"until"`
+	Reason      string    `json:"reason"`
+	Message     string    `json:"message"`
 }
 
 func (m *AccountManager) LicenseCooldowns(ctx context.Context) ([]AccountLicenseCooldown, error) {
@@ -335,7 +358,7 @@ func (m *AccountManager) LicenseCooldowns(ctx context.Context) ([]AccountLicense
 		if name == "" {
 			name = "Audible account"
 		}
-		result = append(result, AccountLicenseCooldown{AccountID: account.id, AccountName: name, Until: cooldown.Until})
+		result = append(result, AccountLicenseCooldown{AccountID: account.id, AccountName: name, Until: cooldown.Until, Reason: cooldown.Reason, Message: licensePauseMessage(cooldown.Reason)})
 	}
 	return result, nil
 }

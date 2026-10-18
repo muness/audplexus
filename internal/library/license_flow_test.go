@@ -27,7 +27,8 @@ func syntheticAudibleCredentials(t *testing.T) *audible.Credentials {
 		t.Fatal(err)
 	}
 	return &audible.Credentials{
-		ADPToken: "synthetic-token", AccessToken: "synthetic-access", CustomerID: "synthetic-customer",
+		DeviceInfo: audible.DeviceInfo{DeviceType: audible.DeviceTypeID, DeviceSerialNumber: "0123456789abcdef0123456789abcdef"},
+		ADPToken:   "synthetic-token", AccessToken: "synthetic-access", CustomerID: "synthetic-customer",
 		ExpiresAt:        time.Now().Add(time.Hour),
 		DevicePrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
 	}
@@ -175,7 +176,7 @@ func TestAccountReloadAndDatabaseReopenKeepLicenseCooldown(t *testing.T) {
 	if !errors.As(err, &cooldown) {
 		t.Fatalf("SDK lost cooldown error: %v", err)
 	}
-	credentials.ADPToken = "fresh-synthetic-token"
+	credentials.AccessToken = "refreshed-synthetic-access"
 	account.Credentials, _ = json.Marshal(credentials)
 	if err := db.UpdateAudibleAccount(ctx, account); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestAccountReloadAndDatabaseReopenKeepLicenseCooldown(t *testing.T) {
 	}
 	_, err = manager.ClientForAccount(account.ID).GetDownloadInfo(ctx, "B000000003")
 	if !errors.As(err, &cooldown) || requests != 1 {
-		t.Fatalf("sign-in bypassed cooldown: requests=%d, error=%v", requests, err)
+		t.Fatalf("token refresh bypassed registration pause: requests=%d, error=%v", requests, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -263,5 +264,134 @@ func TestDeferredDownloadLeavesOtherJobsRunnableAndResumesAfterCooldown(t *testi
 	active, err := service.db.ListDownloads(ctx, &status)
 	if err != nil || len(active) != 2 {
 		t.Fatalf("resume changed claimed jobs: %v, %v", active, err)
+	}
+}
+
+func TestAndroidReconnectUsesNewRegistrationWithoutClearingHTTP429(t *testing.T) {
+	for _, refusal := range []string{"CustomerThrottled", "HTTP429"} {
+		t.Run(refusal, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "reconnect.db")
+			db, err := database.NewSQLite(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := db.Migrate(); err != nil {
+				t.Fatal(err)
+			}
+			credentials := syntheticAudibleCredentials(t)
+			raw, _ := json.Marshal(credentials)
+			account := &database.AudibleAccount{ID: "same-account", DisplayName: "Synthetic account", Marketplace: "us", CustomerID: credentials.CustomerID, Credentials: raw, Enabled: true}
+			if err := db.CreateAudibleAccount(ctx, account); err != nil {
+				t.Fatal(err)
+			}
+			accounts := NewAccountManager(ctx, db, nil)
+			oldRegistration := accounts.accountLicenses[account.ID]
+			requests := 0
+			oldRegistration.base = licenseTestTransport(func(*http.Request) (*http.Response, error) {
+				requests++
+				response := licenseTestResponse(throttledLicense)
+				if refusal == "HTTP429" {
+					response.StatusCode = http.StatusTooManyRequests
+					response.Header.Set("Retry-After", "7200")
+				}
+				return response, nil
+			})
+			_, err = accounts.ClientForAccount(account.ID).GetDownloadInfo(ctx, "B000000001")
+			var pause *LicenseCooldownError
+			if !errors.As(err, &pause) {
+				t.Fatalf("missing initial pause: %v", err)
+			}
+			oldUntil := pause.Until
+
+			// Refreshing tokens on the same device must not bypass either pause.
+			refreshed := *credentials
+			refreshed.AccessToken = "synthetic-refreshed-access"
+			refreshed.ADPToken = "synthetic-refreshed-adp"
+			refreshedClient := audible.NewClient(audible.MarketplaceUS)
+			refreshedClient.SetCredentials(&refreshed)
+			if err := accounts.PersistClientCredentials(ctx, account.ID, refreshedClient); err != nil {
+				t.Fatal(err)
+			}
+			if err := accounts.Reload(ctx); err != nil {
+				t.Fatal(err)
+			}
+			_, err = accounts.ClientForAccount(account.ID).GetDownloadInfo(ctx, "B000000002")
+			if !errors.As(err, &pause) || requests != 1 {
+				t.Fatalf("refresh bypassed pause: requests=%d, error=%v", requests, err)
+			}
+
+			book := &database.Book{ASIN: "B000000001", Title: "Synthetic book", Status: database.BookStatusQueued}
+			if err := db.UpsertBook(ctx, book); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SetBookAccount(ctx, book.ASIN, account.ID); err != nil {
+				t.Fatal(err)
+			}
+			item := &database.DownloadQueue{BookID: book.ID, ASIN: book.ASIN}
+			if err := db.EnqueueDownload(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			downloads := NewDownloadManager(db, nil, nil, nil, nil, t.TempDir(), t.TempDir(), "m4b", false, 1, 1, 1, nil, nil)
+			downloads.accounts = accounts
+			downloads.failItem(ctx, item, book.Title, pause)
+
+			// This is the persistence entry point used after a successful sign-in.
+			android := *credentials
+			android.ADPToken = "synthetic-new-android-adp"
+			android.DeviceInfo = audible.DeviceInfo{DeviceType: "A10KISP2GWF0E4", DeviceSerialNumber: "0123456789abcdef0123"}
+			androidClient := audible.NewClient(audible.MarketplaceUS)
+			androidClient.SetCredentials(&android)
+			if err := accounts.PersistClientCredentials(ctx, account.ID, androidClient); err != nil {
+				t.Fatal(err)
+			}
+			if err := accounts.Reload(ctx); err != nil {
+				t.Fatal(err)
+			}
+			rows, _ := db.ListAudibleAccounts(ctx)
+			if len(rows) != 1 || rows[0].ID != account.ID {
+				t.Fatal("reconnect created a different account")
+			}
+			oldPause, err := oldRegistration.cooldown(ctx)
+			if err != nil || !oldPause.Until.Equal(oldUntil) {
+				t.Fatal("reconnect erased the old pause instead of scoping it")
+			}
+
+			// Reopening the database rules out an in-memory-only bypass.
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = database.NewSQLite(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			accounts = NewAccountManager(ctx, db, nil)
+			downloads.db = db
+			downloads.accounts = accounts
+			downloads.resumeDownloadsAfterCooldown(ctx)
+			waitingStatus := database.DownloadStatusDeferred
+			waiting, _ := db.ListDownloads(ctx, &waitingStatus)
+			if refusal == "CustomerThrottled" && len(waiting) != 0 {
+				t.Fatal("old iPhone pause kept the Android job deferred")
+			}
+			if refusal == "HTTP429" && len(waiting) != 1 {
+				t.Fatal("reconnect bypassed the customer HTTP 429 pause")
+			}
+			guard := accounts.accountLicenses[account.ID]
+			guard.base = licenseTestTransport(func(*http.Request) (*http.Response, error) {
+				requests++
+				return licenseTestResponse(`{"content_license":{"status_code":"Granted","content_url":"https://cdn.example.test/book.aax","drm_type":"Adrm"}}`), nil
+			})
+			info, err := accounts.ClientForAccount(account.ID).GetDownloadInfo(ctx, book.ASIN)
+			if refusal == "CustomerThrottled" {
+				if err != nil || info == nil || requests != 2 {
+					t.Fatalf("Android inherited iPhone pause: requests=%d, error=%v", requests, err)
+				}
+			} else if !errors.As(err, &pause) || requests != 1 || !pause.Until.Equal(oldUntil) {
+				t.Fatalf("Android bypassed HTTP 429 Retry-After: requests=%d, error=%v", requests, err)
+			}
+		})
 	}
 }

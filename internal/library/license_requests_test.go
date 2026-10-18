@@ -304,3 +304,96 @@ func TestCancelledLicenseRequestDoesNotReachAudible(t *testing.T) {
 		t.Fatalf("got %v, want cancellation", err)
 	}
 }
+
+func TestRegistrationsShareCustomerSerializationAndHTTP429WhenSavingFails(t *testing.T) {
+	settings := &licenseTestSettings{writeError: errors.New("database unavailable")}
+	gate := &customerLicenseGate{permit: make(chan struct{}, 1)}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var requests atomic.Int32
+	base := licenseTestTransport(func(*http.Request) (*http.Response, error) {
+		if requests.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		response := licenseTestResponse(`{}`)
+		response.StatusCode = http.StatusTooManyRequests
+		return response, nil
+	})
+	iphone := newRegistrationLicenseTransport(settings, "customer", "iphone", base, gate)
+	android := newRegistrationLicenseTransport(settings, "customer", "android", base, gate)
+	results := make(chan error, 2)
+	go func() { _, err := iphone.RoundTrip(licenseTestRequest(t, "B000000001", "iphone")); results <- err }()
+	<-started
+	go func() { _, err := android.RoundTrip(licenseTestRequest(t, "B000000002", "android")); results <- err }()
+	select {
+	case err := <-results:
+		t.Fatalf("request completed before upstream response: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if requests.Load() != 1 {
+		t.Fatal("different registrations bypassed customer serialization")
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		var pause *LicenseCooldownError
+		if err := <-results; !errors.As(err, &pause) || pause.Reason != "http_429" {
+			t.Fatalf("lost shared HTTP 429 pause: %v", err)
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatal("failed persistence let another registration bypass HTTP 429")
+	}
+}
+
+func TestNewRegistrationAllowsOnlyOneProbeIfCustomerThrottledContinues(t *testing.T) {
+	settings := &licenseTestSettings{}
+	gate := &customerLicenseGate{permit: make(chan struct{}, 1)}
+	var requests atomic.Int32
+	base := licenseTestTransport(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return licenseTestResponse(throttledLicense), nil
+	})
+	iphone := newRegistrationLicenseTransport(settings, "customer", "iphone", base, gate)
+	android := newRegistrationLicenseTransport(settings, "customer", "android", base, gate)
+	_, _ = iphone.RoundTrip(licenseTestRequest(t, "B000000001", "iphone"))
+	var workers sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		request := licenseTestRequest(t, fmt.Sprintf("B%09d", i), "android")
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			_, err := android.RoundTrip(request)
+			var pause *LicenseCooldownError
+			if !errors.As(err, &pause) {
+				t.Errorf("new registration refusal lost pause: %v", err)
+			}
+		}()
+	}
+	workers.Wait()
+	if requests.Load() != 2 {
+		t.Fatalf("sent %d requests; want old registration and one new probe", requests.Load())
+	}
+}
+
+func TestHTTP429AndCustomerThrottledBackoffAreIndependent(t *testing.T) {
+	now := time.Now()
+	requests := 0
+	transport := newLicenseTransport(&licenseTestSettings{}, "customer", licenseTestTransport(func(*http.Request) (*http.Response, error) {
+		requests++
+		response := licenseTestResponse(throttledLicense)
+		if requests == 2 {
+			response.StatusCode = http.StatusTooManyRequests
+		}
+		return response, nil
+	}))
+	transport.now = func() time.Time { return now }
+	for _, want := range []time.Duration{firstLicenseCooldown, firstLicenseCooldown, 2 * firstLicenseCooldown} {
+		_, err := transport.RoundTrip(licenseTestRequest(t, "B000000001", "token"))
+		var pause *LicenseCooldownError
+		if !errors.As(err, &pause) || pause.Until.Sub(now) != want {
+			t.Fatalf("wrong refusal backoff: want=%v, error=%v", want, err)
+		}
+		now = pause.Until.Add(time.Second)
+	}
+}

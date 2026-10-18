@@ -18,10 +18,10 @@ func (dm *DownloadManager) deferForLicenseCooldown(ctx context.Context, item *da
 	item.StartedAt = nil
 	item.CompletedAt = nil
 	if updateErr := dm.db.UpdateDownload(ctx, item); updateErr != nil {
-		dlLog.Error().Err(updateErr).Msg("could not defer throttled download")
+		dlLog.Error().Err(updateErr).Msg("could not defer download during license pause")
 		return true
 	}
-	dlLog.Warn().Err(err).Str("asin", item.ASIN).Time("retry_after", cooldown.Until).Msg("download deferred while Audible throttles license requests")
+	dlLog.Warn().Err(err).Str("asin", item.ASIN).Time("retry_after", cooldown.Until).Msg("download deferred during Audplexus license pause")
 	_ = dm.db.UpdateBookStatus(ctx, item.BookID, database.BookStatusQueued)
 	dm.emit(DownloadEvent{ASIN: item.ASIN, BookID: item.BookID, Title: title, Type: "deferred", Stage: "queued", Error: item.Error})
 	return true

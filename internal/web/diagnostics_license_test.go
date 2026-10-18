@@ -96,7 +96,7 @@ func TestPipelineTemplateShowsDeferredRetryTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(response.Body.String(), "account throttled") || !strings.Contains(response.Body.String(), `datetime="2030-01-01T00:00:00Z"`) {
+	if !strings.Contains(response.Body.String(), "license requests paused") || !strings.Contains(response.Body.String(), `datetime="2030-01-01T00:00:00Z"`) {
 		t.Fatal("waiting table omitted the deferred retry time")
 	}
 }

@@ -2555,15 +2555,15 @@ func destinationLogoPath(t string) string {
 // page render (a handful of LIMIT 1 / len() queries) — for HTMX fragment
 // responses the value is omitted since base.html isn't part of the swap.
 type sidebarData struct {
-	NewBooks          int
-	ActiveDL          int
-	FailedDestAlert   int
-	Version           string
-	Uptime            string
-	Healthy           bool
-	ThrottledAccounts int
-	FailedDownloads   int
-	StatusUnavailable bool
+	NewBooks              int
+	ActiveDL              int
+	FailedDestAlert       int
+	Version               string
+	Uptime                string
+	Healthy               bool
+	PausedAudibleAccounts int
+	FailedDownloads       int
+	StatusUnavailable     bool
 }
 
 // computeSidebar gathers the fields the sidebar template renders. Cheap
@@ -2600,12 +2600,12 @@ func (s *Server) computeSidebar(ctx context.Context) sidebarData {
 	}
 
 	cooldowns, statusErr := s.audibleLicenseCooldowns(ctx)
-	out.ThrottledAccounts = len(cooldowns)
+	out.PausedAudibleAccounts = len(cooldowns)
 	failedStatus := database.DownloadStatusFailed
 	failed, downloadErr := s.db.ListDownloads(ctx, &failedStatus)
 	out.FailedDownloads = len(failed)
 	out.StatusUnavailable = statusErr != nil || downloadErr != nil
-	out.Healthy = !out.StatusUnavailable && out.ThrottledAccounts == 0 && out.FailedDownloads == 0 && out.FailedDestAlert == 0 && s.audibleAuthenticated()
+	out.Healthy = !out.StatusUnavailable && out.PausedAudibleAccounts == 0 && out.FailedDownloads == 0 && out.FailedDestAlert == 0 && s.audibleAuthenticated()
 	return out
 }
 

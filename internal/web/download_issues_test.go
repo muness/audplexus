@@ -15,7 +15,7 @@ import (
 	"github.com/mstrhakr/audplexus/internal/library"
 )
 
-func serverWithThrottledAccount(t *testing.T) (*Server, time.Time) {
+func serverWithLicensePause(t *testing.T) (*Server, time.Time) {
 	t.Helper()
 	db := newWebTestDB(t)
 	ctx := context.Background()
@@ -24,8 +24,8 @@ func serverWithThrottledAccount(t *testing.T) (*Server, time.Time) {
 		t.Fatal(err)
 	}
 	until := time.Now().Add(time.Hour).Truncate(time.Second)
-	value, _ := json.Marshal(map[string]any{"until": until, "delay": int64(time.Hour)})
-	key := fmt.Sprintf("audible_license_cooldown_%x", sha256.Sum256([]byte("us:"+account.ID)))
+	value, _ := json.Marshal(map[string]any{"until": until, "delay": int64(time.Hour), "reason": "http_429"})
+	key := fmt.Sprintf("audible_license_http429_%x", sha256.Sum256([]byte("us:"+account.ID)))
 	if err := db.SetSetting(ctx, key, string(value)); err != nil {
 		t.Fatal(err)
 	}
@@ -35,24 +35,27 @@ func serverWithThrottledAccount(t *testing.T) (*Server, time.Time) {
 }
 
 func TestAccountIndicatorShowsThrottleWithoutWaitingJobs(t *testing.T) {
-	server, until := serverWithThrottledAccount(t)
+	server, until := serverWithLicensePause(t)
 	response := httptest.NewRecorder()
 	server.router.GET("/api/audible/status", server.handleAudibleAccountStatus)
 	server.router.ServeHTTP(response, httptest.NewRequest("GET", "/api/audible/status", nil))
 	html := response.Body.String()
-	for _, text := range []string{"Personal Audible: downloads throttled by Audible", "Next automatic attempt:", "Audible account throttled", until.Format(time.RFC3339)} {
+	for _, text := range []string{"Personal Audible: license requests paused", "Next Audplexus attempt:", "Audible downloads paused", until.Format(time.RFC3339)} {
 		if !strings.Contains(html, text) {
 			t.Fatalf("account indicator omitted %q: %s", text, html)
 		}
+	}
+	if !strings.Contains(html, "HTTP 429") || strings.Contains(html, "CustomerThrottled") {
+		t.Fatal("HTTP 429 account warning used a registration refusal explanation")
 	}
 	if strings.Contains(html, "All systems operational") {
 		t.Fatal("throttled account was reported healthy")
 	}
 	view := server.accountsForView(context.Background())
-	if len(view) != 1 || !view[0].ThrottledUntil.Equal(until) {
+	if len(view) != 1 || !view[0].LicensePausedUntil.Equal(until) {
 		t.Fatalf("Settings omitted account cooldown: %+v", view)
 	}
-	key := fmt.Sprintf("audible_license_cooldown_%x", sha256.Sum256([]byte("us:synthetic-account")))
+	key := fmt.Sprintf("audible_license_http429_%x", sha256.Sum256([]byte("us:synthetic-account")))
 	if err := server.db.SetSetting(context.Background(), key, `{"until":"2000-01-01T00:00:00Z","delay":1}`); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +66,7 @@ func TestAccountIndicatorShowsThrottleWithoutWaitingJobs(t *testing.T) {
 }
 
 func TestBookAndDashboardShowDeferredIssueAndIgnoreStaleFailures(t *testing.T) {
-	server, until := serverWithThrottledAccount(t)
+	server, until := serverWithLicensePause(t)
 	ctx := context.Background()
 	queued := &database.Book{ASIN: "B000000001", Title: "Synthetic queued book", Status: database.BookStatusQueued}
 	complete := &database.Book{ASIN: "B000000002", Title: "Synthetic completed book", Status: database.BookStatusComplete}
@@ -72,7 +75,7 @@ func TestBookAndDashboardShowDeferredIssueAndIgnoreStaleFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	message := "Audible is throttling download licenses (CustomerThrottled). Retry after " + until.Format(time.RFC3339)
+	message := "Audible returned CustomerThrottled for this device registration. Audplexus paused its license requests; reconnecting may help. Retry after " + until.Format(time.RFC3339)
 	for _, item := range []database.DownloadQueue{
 		{BookID: queued.ID, ASIN: queued.ASIN, Status: database.DownloadStatusDeferred, Error: message},
 		{BookID: complete.ID, ASIN: complete.ASIN, Status: database.DownloadStatusFailed, Error: "old failure"},
@@ -111,7 +114,7 @@ func TestBookAndDashboardShowDeferredIssueAndIgnoreStaleFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			html := response.Body.String()
-			for _, text := range []string{"account throttled", "CustomerThrottled", "Automatic retry", until.Format(time.RFC3339), "Personal Audible"} {
+			for _, text := range []string{"license requests paused", "CustomerThrottled", "Automatic retry", until.Format(time.RFC3339), "Personal Audible"} {
 				if !strings.Contains(html, text) {
 					t.Fatalf("%s omitted %q", target.name, text)
 				}
@@ -128,7 +131,7 @@ func TestFailedBookShowsSavedErrorWithoutRawHTML(t *testing.T) {
 }
 
 func TestStatusAPIReportsAccountThrottleAsAnIssueWithoutFailedBooks(t *testing.T) {
-	server, _ := serverWithThrottledAccount(t)
+	server, _ := serverWithLicensePause(t)
 	server.sync = library.NewSyncService(server.db, nil, t.TempDir())
 	server.router.GET("/api/sync/status.json", server.handleSyncStatusJSON)
 	response := httptest.NewRecorder()
