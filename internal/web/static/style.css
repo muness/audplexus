@@ -4000,3 +4000,5 @@ body:has(> .errpg-shell) { display: block; min-height: 100vh; }
 
 .pool-waiting-list li.pool-waiting-throttled { flex-wrap: wrap; }
 .pool-waiting-throttled .pool-item-issue { width: 100%; min-width: 0; }
+
+.audible-account-warning a, .download-issue a, .pool-item-issue a { color: var(--text); text-decoration: underline; text-underline-offset: .15em; }

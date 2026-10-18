@@ -3,7 +3,7 @@
 <strong>{{.Label}}</strong>
 <div>{{.Message}}</div>
 {{if .AccountName}}<div>Account: {{.AccountName}}</div>{{end}}
-{{if .RetryAt}}<div>Automatic retry <time data-local-time datetime="{{.RetryAt}}">{{.RetryLabel}}</time>.</div>{{end}}
+{{if .RetryAt}}<div>Automatic retry: <time data-local-time datetime="{{.RetryAt}}">{{.RetryLabel}}</time>.</div>{{end}}
 <a href="/downloads?tab=waiting">View in Pipeline</a>
 {{end}}
 {{end}}

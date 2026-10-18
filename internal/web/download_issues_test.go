@@ -40,7 +40,7 @@ func TestAccountIndicatorShowsThrottleWithoutWaitingJobs(t *testing.T) {
 	server.router.GET("/api/audible/status", server.handleAudibleAccountStatus)
 	server.router.ServeHTTP(response, httptest.NewRequest("GET", "/api/audible/status", nil))
 	html := response.Body.String()
-	for _, text := range []string{"Personal Audible: downloads throttled by Audible", "retry automatically", "Audible account throttled", until.Format(time.RFC3339)} {
+	for _, text := range []string{"Personal Audible: downloads throttled by Audible", "Next automatic attempt:", "Audible account throttled", until.Format(time.RFC3339)} {
 		if !strings.Contains(html, text) {
 			t.Fatalf("account indicator omitted %q: %s", text, html)
 		}
@@ -90,6 +90,12 @@ func TestBookAndDashboardShowDeferredIssueAndIgnoreStaleFailures(t *testing.T) {
 	}
 	if !issues[queued.ID].Deferred || issues[queued.ID].AccountName != "Personal Audible" {
 		t.Fatalf("book lost account issue: %+v", issues)
+	}
+	manager := library.NewDownloadManager(server.db, nil, nil, nil, nil, t.TempDir(), t.TempDir(), "m4b", false, 1, 1, 1, nil, nil)
+	manager.SetAccountManager(server.accounts)
+	snapshot := manager.PipelineSnapshot(ctx)
+	if len(snapshot.Items) != 1 || !snapshot.Items[0].Deferred || snapshot.Items[0].AccountName != "Personal Audible" || !strings.Contains(snapshot.Items[0].Error, "Retry after") {
+		t.Fatalf("live snapshot lost throttle details: %+v", snapshot.Items)
 	}
 	for _, target := range []struct {
 		name string

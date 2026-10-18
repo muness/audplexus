@@ -2,7 +2,7 @@
 {{range .AccountCooldowns}}
 <div class="audible-account-warning" role="status" data-throttled-account="{{.AccountID}}" data-retry-until="{{.Until.Format "2006-01-02T15:04:05Z07:00"}}">
     <strong>{{.AccountName}}: downloads throttled by Audible</strong>
-    <div>Downloads from this account are waiting. Audplexus will retry automatically <time data-local-time datetime="{{.Until.Format "2006-01-02T15:04:05Z07:00"}}">{{.Until.UTC.Format "Jan 2, 15:04 MST"}}</time>.</div>
+    <div>Downloads from this account are waiting. Next automatic attempt: <time data-local-time datetime="{{.Until.Format "2006-01-02T15:04:05Z07:00"}}">{{.Until.UTC.Format "Jan 2, 15:04 MST"}}</time>.</div>
     <a href="/downloads?tab=waiting">View waiting downloads</a> · <a href="/settings#section-audible">Audible account</a>
 </div>
 {{end}}
