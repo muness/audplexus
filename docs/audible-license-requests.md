@@ -90,3 +90,24 @@ downloads can legitimately request licenses during a sync. Default ASIN lookups
 should also produce no license events. For a throttled download, expect one
 `request_sent`, a throttled result, and `cooldown_started`; later attempts before
 `retry_after` should show `cooldown_skip` without another `request_sent`.
+
+## Show the issue where the user is working
+
+A saved account cooldown appears in a warning above each page and on the Audible
+account in Settings. The sidebar reports an account throttle instead of claiming
+that all systems are operational. These views read saved state; opening a page
+does not request a license.
+
+Deferred books say **Waiting for Audible — account throttled** in Library,
+book details, the Dashboard, worker queues, and Pipeline → Waiting. They show
+the affected account and automatic retry time. Retry times use the browser's
+local timezone, with an explicit UTC fallback before JavaScript runs. Failed
+books show their saved display-safe error beside the title and in book details.
+Completed books do not show an old failed queue entry as their current issue.
+
+The account warning refreshes every 12 seconds and on a deferred-download event.
+Book rows also consume pipeline events and snapshots, so a live update does not
+replace a throttle with the generic Queued label. The status JSON API reports
+`audible_account_cooldowns`, `downloads_deferred`, and `has_issues=true` during a
+known account throttle. `/healthz` remains a process-liveness check; a provider
+throttle should not trigger a container restart loop.

@@ -18,6 +18,7 @@
                 <span>{{if .Book.UnavailableReason}}{{.Book.UnavailableReason}}{{else}}Unavailable on Audible{{end}}</span>
             </div>
             {{end}}
+            <div class="download-issue" data-book-issue="{{.Book.ID}}" {{if not .BookIssue.Message}}hidden{{end}}>{{template "download_issue.html" .BookIssue}}</div>
             {{if .Book.Narrator}}<small>narr. {{.Book.Narrator}}</small>{{end}}
         </div>
     </td>
@@ -28,7 +29,7 @@
     </td>
     <td class="cell-mono col-duration">{{formatDuration .Book.Duration}}</td>
     <td class="cell-mono col-purchased">{{formatDate .Book.PurchaseDate}}</td>
-    <td class="col-status"><span class="badge {{statusBadge .Book.Status}}" id="status-book-{{.Book.ID}}">{{.Book.Status}}</span></td>
+    <td class="col-status"><span class="badge {{if .BookIssue.Deferred}}badge-warning{{else}}{{statusBadge .Book.Status}}{{end}}" id="status-book-{{.Book.ID}}">{{if .BookIssue.Deferred}}Waiting for Audible{{else}}{{.Book.Status}}{{end}}</span></td>
     <td class="col-presence">
         {{if or .Presence .Accounts}}
         <div class="presence-cell" role="list" aria-label="Presence">

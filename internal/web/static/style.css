@@ -3987,3 +3987,16 @@ body:has(> .errpg-shell) { display: block; min-height: 100vh; }
     .errpg-code-digit,
     .errpg-card { animation: none; }
 }
+
+/* Keep the cause and next step visible beside the affected book. */
+.download-issue { color: var(--text); font-size: .82rem; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.download-issue[hidden] { display: none; }
+.download-issue strong { color: var(--warning); display: block; }
+.download-issue a { text-decoration: underline; text-underline-offset: .15em; }
+.cell-title .download-issue { margin-top: .4rem; max-width: 46ch; }
+.audible-account-warning { margin: 0 0 1rem; padding: .75rem 1rem; border: 1px solid var(--warning); border-radius: 6px; background: var(--surface); color: var(--text); line-height: 1.5; }
+.audible-account-warning strong { color: var(--warning); }
+.pool-item-issue { display: block; font-size: .75rem; line-height: 1.4; white-space: normal; color: var(--warning); }
+
+.pool-waiting-list li.pool-waiting-throttled { flex-wrap: wrap; }
+.pool-waiting-throttled .pool-item-issue { width: 100%; min-width: 0; }

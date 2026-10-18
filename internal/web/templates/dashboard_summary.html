@@ -24,7 +24,7 @@
     <a class="stat-card stat-card-link" href="/library?status=failed">
         <div class="label">Failed</div>
         <div class="value" id="stat-failed-dl">{{.FailedDL}}</div>
-        <div class="delta {{if gt .FailedDL 0}}down{{else}}up{{end}}">{{if gt .FailedDL 0}}needs attention{{else}}all clear{{end}}</div>
+        <div class="delta {{if gt .FailedDL 0}}down{{else}}up{{end}}">{{if gt .FailedDL 0}}needs attention{{else}}no failed downloads{{end}}</div>
     </a>
 </div>
 

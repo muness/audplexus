@@ -90,12 +90,13 @@ func TestPipelineTemplateShowsDeferredRetryTime(t *testing.T) {
 		"Complete":       []database.DownloadQueue{},
 		"DownloadTitles": map[string]string{},
 		"ActiveTab":      "waiting",
+		"WaitingIssues":  map[int64]downloadIssue{0: issueForDownload(database.DownloadQueue{Status: database.DownloadStatusDeferred, Error: "Retry after 2030-01-01T00:00:00Z"})},
 		"Pending":        []database.DownloadQueue{{ASIN: "B000000001", Status: database.DownloadStatusDeferred, Error: "Retry after 2030-01-01T00:00:00Z"}},
 	}).Render(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(response.Body.String(), "Retry after 2030-01-01T00:00:00Z") {
+	if !strings.Contains(response.Body.String(), "account throttled") || !strings.Contains(response.Body.String(), `datetime="2030-01-01T00:00:00Z"`) {
 		t.Fatal("waiting table omitted the deferred retry time")
 	}
 }

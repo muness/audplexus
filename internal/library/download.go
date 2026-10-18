@@ -18,6 +18,7 @@ import (
 	"github.com/mstrhakr/audplexus/internal/audio"
 	"github.com/mstrhakr/audplexus/internal/audnexus"
 	"github.com/mstrhakr/audplexus/internal/database"
+	"github.com/mstrhakr/audplexus/internal/errs"
 	"github.com/mstrhakr/audplexus/internal/logging"
 	"github.com/mstrhakr/audplexus/internal/mediaserver"
 	"github.com/mstrhakr/audplexus/internal/organizer"
@@ -126,6 +127,8 @@ type PipelineStateItem struct {
 	ASIN         string    `json:"asin"`
 	BookID       int64     `json:"book_id"`
 	Title        string    `json:"title,omitempty"`
+	Deferred     bool      `json:"deferred,omitempty"`
+	Error        string    `json:"error,omitempty"`
 	Stage        string    `json:"stage"`
 	Progress     float64   `json:"progress"`
 	BytesWritten int64     `json:"bytes_written,omitempty"`
@@ -534,6 +537,8 @@ func (dm *DownloadManager) PipelineSnapshot(ctx context.Context) PipelineSnapsho
 			ASIN:      p.ASIN,
 			BookID:    p.BookID,
 			Title:     title,
+			Deferred:  p.Status == database.DownloadStatusDeferred,
+			Error:     errs.CleanForDisplay(p.Error),
 			Stage:     "queued",
 			Progress:  p.Progress,
 			UpdatedAt: p.UpdatedAt,
@@ -974,7 +979,7 @@ func (dm *DownloadManager) failItem(ctx context.Context, item *database.Download
 	item.CompletedAt = &now
 	_ = dm.db.UpdateDownload(ctx, item)
 	_ = dm.db.UpdateBookStatus(ctx, item.BookID, database.BookStatusFailed)
-	dm.emit(DownloadEvent{ASIN: item.ASIN, BookID: item.BookID, Title: title, Type: "failed", Stage: "downloading", Error: err.Error()})
+	dm.emit(DownloadEvent{ASIN: item.ASIN, BookID: item.BookID, Title: title, Type: "failed", Stage: "downloading", Error: errs.CleanDownloadError(err.Error())})
 	dm.pauseForPermissionError(err, "processing downloads")
 }
 

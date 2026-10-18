@@ -300,3 +300,42 @@ func (m *AccountManager) licenseCooldownForBook(ctx context.Context, asin string
 	}
 	return cooldown.Until, nil
 }
+
+// AccountLicenseCooldown describes a known throttle without requesting a license.
+type AccountLicenseCooldown struct {
+	AccountID   string    `json:"account_id"`
+	AccountName string    `json:"account_name"`
+	Until       time.Time `json:"until"`
+}
+
+func (m *AccountManager) LicenseCooldowns(ctx context.Context) ([]AccountLicenseCooldown, error) {
+	m.mu.RLock()
+	type accountTransport struct {
+		id, name  string
+		transport *licenseTransport
+	}
+	accounts := make([]accountTransport, 0, len(m.order))
+	for _, id := range m.order {
+		accounts = append(accounts, accountTransport{id, m.names[id], m.accountLicenses[id]})
+	}
+	m.mu.RUnlock()
+	var result []AccountLicenseCooldown
+	for _, account := range accounts {
+		if account.transport == nil {
+			continue
+		}
+		cooldown, err := account.transport.cooldown(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !account.transport.now().Before(cooldown.Until) {
+			continue
+		}
+		name := account.name
+		if name == "" {
+			name = "Audible account"
+		}
+		result = append(result, AccountLicenseCooldown{AccountID: account.id, AccountName: name, Until: cooldown.Until})
+	}
+	return result, nil
+}

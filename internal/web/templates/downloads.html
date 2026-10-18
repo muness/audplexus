@@ -64,13 +64,13 @@
     <section class="pipe-tab-panel" data-pipe-panel="waiting" {{if ne $tab "waiting"}}hidden{{end}}>
         <div class="table-wrap">
             <table class="tbl" id="pending-table" hx-get="/downloads?tab=waiting" hx-trigger="license:deferred from:body delay:250ms" hx-select="#pending-table" hx-swap="outerHTML">
-                <thead><tr><th>Title</th><th>ASIN</th><th>Priority</th><th>Queued</th><th class="col-actions">Actions</th></tr></thead>
+                <thead><tr><th>Title</th><th>ASIN</th><th colspan="2">Status / retry</th><th class="col-actions">Actions</th></tr></thead>
                 <tbody id="pending-body">
                 {{range .Pending}}
                 <tr id="pending-{{.ASIN}}">
                     <td>{{$title := index $.DownloadTitles .ASIN}}{{if $title}}{{$title}}{{else}}<span class="cell-mono">{{.ASIN}}</span>{{end}}</td>
                     <td class="cell-mono">{{.ASIN}}</td>
-                    {{if eq .Status "deferred"}}<td colspan="2">{{.Error}}</td>{{else}}
+                    {{if eq .Status "deferred"}}<td colspan="2" class="download-issue">{{template "download_issue.html" (index $.WaitingIssues .ID)}}</td>{{else}}
                     <td class="cell-mono">{{.Priority}}</td>
                     <td class="cell-mono">{{formatDate .CreatedAt}}</td>
                     {{end}}

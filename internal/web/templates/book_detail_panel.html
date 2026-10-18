@@ -80,7 +80,7 @@
         {{if .Book.Series}}<div class="series">{{.Book.Series}} · Book {{.Book.SeriesPosition}}</div>{{end}}
 
         <div class="badge-row">
-            <span class="badge {{statusBadge .Book.Status}}" id="status-book-{{.Book.ID}}">{{.Book.Status}}</span>
+            <span class="badge {{if .BookIssue.Deferred}}badge-warning{{else}}{{statusBadge .Book.Status}}{{end}}" id="status-book-{{.Book.ID}}">{{if .BookIssue.Deferred}}Waiting for Audible{{else}}{{.Book.Status}}{{end}}</span>
             {{if .Book.FilePath}}<span class="badge badge-success">On disk</span>{{end}}
         </div>
 
@@ -90,6 +90,8 @@
             <div><strong>Unavailable.</strong> {{if .Book.UnavailableReason}}{{.Book.UnavailableReason}}{{else}}Audible reports this title cannot be downloaded with your current account.{{end}}</div>
         </div>
         {{end}}
+
+        <div class="download-issue" data-book-issue="{{.Book.ID}}" {{if not .BookIssue.Message}}hidden{{end}}>{{template "download_issue.html" .BookIssue}}</div>
 
         <dl class="meta-grid">
             <dt>Author</dt><dd>{{.Book.Author}}</dd>

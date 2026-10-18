@@ -123,9 +123,9 @@
         </ul>
         {{if $sb}}
         <div class="sidebar-footer">
-            <span class="health-dot{{if not $sb.Healthy}} health-dot-warn{{end}}"></span>
+            <span id="system-health-dot" class="health-dot{{if not $sb.Healthy}} health-dot-warn{{end}}"></span>
             <div class="meta">
-                <strong>{{if $sb.Healthy}}All systems operational{{else if gt $sb.FailedDestAlert 0}}Destination issues{{else}}Audible not connected{{end}}</strong>
+                <strong id="system-health-label">{{if gt $sb.ThrottledAccounts 0}}Audible account throttled{{else if gt $sb.FailedDownloads 0}}Downloads need attention{{else if $sb.StatusUnavailable}}Download status unavailable{{else if $sb.Healthy}}All systems operational{{else if gt $sb.FailedDestAlert 0}}Destination issues{{else}}Audible not connected{{end}}</strong>
                 {{$sb.Version}} · uptime {{$sb.Uptime}}
             </div>
         </div>
@@ -159,6 +159,7 @@
                 <span><strong>Authentication is disabled.</strong> Anyone who can reach this server has full access. <a href="/settings#section-security" style="color:#fff;text-decoration:underline;">Set up a password and API key →</a></span>
             </div>
             {{end}}
+            <div id="audible-account-status" hx-get="/api/audible/status" hx-trigger="load, every 12s, license:deferred from:body" hx-swap="innerHTML">{{template "audible_account_status.html" .}}</div>
             {{template "content" .}}
         </main>
     </div>
@@ -287,12 +288,60 @@
             'waiting_decrypt': 'badge-info',
             'waiting_moving':  'badge-info',
             'queued':      'badge-info',
+            'deferred':    'badge-warning',
             'complete':    'badge-success',
             'failed':      'badge-error',
             'new':         'badge-neutral'
         };
 
+        function localizeRetryTimes(root) {
+            (root || document).querySelectorAll('time[data-local-time]').forEach(function(el) {
+                var date = new Date(el.getAttribute('datetime'));
+                if (!isNaN(date.getTime())) el.textContent = date.toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short'});
+            });
+        }
+        document.addEventListener('DOMContentLoaded', function() { localizeRetryTimes(document); syncAccountCooldownBadges(); });
+        document.body.addEventListener('htmx:afterSwap', function(e) { localizeRetryTimes(e.target); if (e.target.id === 'audible-account-status') syncAccountCooldownBadges(); });
+
+        function syncAccountCooldownBadges() {
+            var status = document.getElementById('audible-account-status');
+            if (!status || status.querySelector('[data-status-unavailable]')) return;
+            var cooldowns = {};
+            status.querySelectorAll('[data-throttled-account]').forEach(function(el) { cooldowns[el.getAttribute('data-throttled-account')] = el.getAttribute('data-retry-until'); });
+            document.querySelectorAll('[data-account-cooldown]').forEach(function(el) {
+                var until = cooldowns[el.getAttribute('data-account-cooldown')];
+                el.hidden = !until;
+                el.innerHTML = until ? '<strong>Account throttled</strong><div>Automatic retry <time data-local-time datetime="' + escHTML(until) + '">' + escHTML(until) + '</time>. Signing in again does not clear the cooldown.</div>' : '';
+                localizeRetryTimes(el);
+            });
+        }
+
+        function downloadIssueHTML(message, deferred) {
+            if (!deferred) return '<strong>Download failed</strong><div>' + escHTML(message || 'No error details were saved.') + '</div>';
+            var parts = String(message || '').split('Retry after ');
+            var html = '<strong>Waiting for Audible — account throttled</strong><div>Audible is throttling download licenses (CustomerThrottled).</div>';
+            if (parts.length > 1) {
+                var date = new Date(parts[1].trim());
+                if (!isNaN(date.getTime())) html += '<div>Automatic retry <time data-local-time datetime="' + escHTML(date.toISOString()) + '">' + escHTML(date.toLocaleString()) + '</time>.</div>';
+            }
+            return html + '<a href="/downloads?tab=waiting">View in Pipeline</a>';
+        }
+
+        function updateBookDownloadIssue(event) {
+            if (!event.book_id) return;
+            var deferred = event.deferred || event.type === 'deferred';
+            var failed = event.type === 'failed';
+            var changesIssue = deferred || failed || event.type === 'started' || event.type === 'complete' || event.type === 'cancelled' || (event.type === 'queue' && !deferred);
+            if (!changesIssue) return;
+            document.querySelectorAll('[data-book-issue="' + event.book_id + '"]').forEach(function(el) {
+                el.hidden = !deferred && !failed;
+                el.innerHTML = el.hidden ? '' : downloadIssueHTML(event.error, deferred);
+                localizeRetryTimes(el);
+            });
+        }
+
         function stageLabel(stage) {
+            if (stage === 'deferred') return 'Waiting for Audible';
             if (stage === 'moving') return 'moving file';
             if (stage === 'finalizing') return 'finalizing';
             if (stage === 'waiting_decrypt') return 'waiting for decrypt worker';
@@ -328,7 +377,7 @@
                     waitingHtml += '<ul class="pool-waiting-list">';
                     for (var j = 0; j < p.waiting.length && j < 8; j++) {
                         var w = p.waiting[j];
-                        waitingHtml += '<li><span class="pool-item-title">' + escHTML(w.title || w.asin) + '</span><span class="pool-item-asin">' + escHTML(w.asin) + '</span></li>';
+                        waitingHtml += '<li class="' + (w.deferred ? 'pool-waiting-throttled' : '') + '"><span class="pool-item-title">' + escHTML(w.title || w.asin) + '</span><span class="pool-item-asin">' + escHTML(w.asin) + '</span>' + (w.deferred ? '<div class="pool-item-issue">' + downloadIssueHTML(w.error, true) + '</div>' : '') + '</li>';
                     }
                     if (p.waiting.length > 8) {
                         waitingHtml += '<li class="pool-more">+' + (p.waiting.length - 8) + ' more</li>';
@@ -416,6 +465,8 @@
                     asin: item.asin,
                     title: item.title,
                     book_id: item.book_id,
+                    deferred: item.deferred,
+                    error: item.error,
                     progress: item.progress,
                     bytes_written: item.bytes_written,
                     total_bytes: item.total_bytes,
@@ -866,10 +917,12 @@
                 if (window.htmx) htmx.trigger(document.body, 'license:deferred');
             }
 
+            updateBookDownloadIssue(d);
+
             // --- Library row status badge updates ---
             var badge = document.getElementById('status-book-' + d.book_id);
             if (badge) {
-                var stage = d.stage || d.type;
+                var stage = (d.deferred || d.type === 'deferred') ? 'deferred' : (d.stage || d.type);
                 badge.textContent = stageLabel(stage);
                 badge.className = 'badge ' + (badgeClass[stage] || 'badge-neutral');
 

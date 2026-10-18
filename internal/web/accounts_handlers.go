@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mstrhakr/audplexus/internal/database"
@@ -21,6 +22,7 @@ type accountView struct {
 	Authenticated bool
 	Enabled       bool
 	IsPrimary     bool
+	ThrottledUntil time.Time
 }
 
 // accountsForView returns every account for the Settings page, ordered with the
@@ -35,11 +37,17 @@ func (s *Server) accountsForView(ctx context.Context) []accountView {
 	if s.accounts != nil {
 		primaryID = s.accounts.PrimaryAccountID()
 	}
+	cooldowns, _ := s.audibleLicenseCooldowns(ctx)
+	until := make(map[string]time.Time, len(cooldowns))
+	for _, cooldown := range cooldowns {
+		until[cooldown.AccountID] = cooldown.Until
+	}
 	out := make([]accountView, 0, len(rows))
 	for i := range rows {
 		r := rows[i]
 		out = append(out, accountView{
 			ID:            r.ID,
+			ThrottledUntil: until[r.ID],
 			DisplayName:   accountDisplayName(&r),
 			Marketplace:   r.Marketplace,
 			Authenticated: r.HasCredentials(),

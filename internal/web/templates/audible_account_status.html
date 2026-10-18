@@ -1,0 +1,14 @@
+{{define "audible_account_status.html"}}
+{{range .AccountCooldowns}}
+<div class="audible-account-warning" role="status" data-throttled-account="{{.AccountID}}" data-retry-until="{{.Until.Format "2006-01-02T15:04:05Z07:00"}}">
+    <strong>{{.AccountName}}: downloads throttled by Audible</strong>
+    <div>Downloads from this account are waiting. Audplexus will retry automatically <time data-local-time datetime="{{.Until.Format "2006-01-02T15:04:05Z07:00"}}">{{.Until.UTC.Format "Jan 2, 15:04 MST"}}</time>.</div>
+    <a href="/downloads?tab=waiting">View waiting downloads</a> · <a href="/settings#section-audible">Audible account</a>
+</div>
+{{end}}
+{{if .StatusUnavailable}}<div data-status-unavailable class="audible-account-warning" role="status">Audible download status is unavailable. Check Diagnostics before retrying.</div>{{end}}
+{{if .RefreshSidebar}}{{with .Sidebar}}
+<strong id="system-health-label" hx-swap-oob="true">{{if gt .ThrottledAccounts 0}}Audible account throttled{{else if gt .FailedDownloads 0}}Downloads need attention{{else if .StatusUnavailable}}Download status unavailable{{else if .Healthy}}All systems operational{{else if gt .FailedDestAlert 0}}Destination issues{{else}}Audible not connected{{end}}</strong>
+<span id="system-health-dot" hx-swap-oob="true" class="health-dot{{if not .Healthy}} health-dot-warn{{end}}"></span>
+{{end}}{{end}}
+{{end}}

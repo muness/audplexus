@@ -461,7 +461,7 @@ func (s *Server) setupTemplates() {
 	base := template.Must(template.New("base").Funcs(funcMap).ParseFS(templateFS, "templates/base.html"))
 
 	// Parse all partial/fragment templates that may be referenced by page templates
-	partials := []string{"templates/library_table.html", "templates/library_row.html", "templates/book_detail_panel.html", "templates/book_detail_modal.html", "templates/settings_saved.html", "templates/sync_status.html", "templates/dashboard_summary.html", "templates/dashboard_downloads.html", "templates/destinations_new.html", "templates/destinations_form.html", "templates/destinations_delete.html", "templates/destinations_card.html", "templates/reorganize_modal.html", "templates/reorganize_preview.html", "templates/amazon_auth_flow.html"}
+	partials := []string{"templates/download_issue.html", "templates/audible_account_status.html", "templates/library_table.html", "templates/library_row.html", "templates/book_detail_panel.html", "templates/book_detail_modal.html", "templates/settings_saved.html", "templates/sync_status.html", "templates/dashboard_summary.html", "templates/dashboard_downloads.html", "templates/destinations_new.html", "templates/destinations_form.html", "templates/destinations_delete.html", "templates/destinations_card.html", "templates/reorganize_modal.html", "templates/reorganize_preview.html", "templates/amazon_auth_flow.html"}
 	baseWithPartials := template.Must(template.Must(base.Clone()).ParseFS(templateFS, partials...))
 
 	r := &multiRender{templates: make(map[string]*template.Template)}
@@ -730,6 +730,7 @@ func (s *Server) setupRoutes() {
 		api.POST("/downloads/pause", s.handlePauseDownloads)
 		api.POST("/downloads/resume", s.handleResumeDownloads)
 		api.GET("/downloads/state", s.handleDownloadsState)
+		api.GET("/audible/status", s.handleAudibleAccountStatus)
 		api.GET("/pipeline/state", s.handlePipelineState)
 
 		api.GET("/events", s.handleSSE)
@@ -1155,16 +1156,25 @@ func (s *Server) getDashboardDownloadsData(ctx context.Context) gin.H {
 		completeDownloads = completeDownloads[:10]
 	}
 
-	rowsForTitles := make([]database.DownloadQueue, 0, len(failedRecent)+len(completeDownloads))
+	deferredStatus := database.DownloadStatusDeferred
+	deferred, _ := s.db.ListDownloads(ctx, &deferredStatus)
+	deferredIssues := make(map[int64]downloadIssue, len(deferred))
+	for _, item := range deferred {
+		deferredIssues[item.ID] = s.downloadIssue(ctx, item)
+	}
+	rowsForTitles := make([]database.DownloadQueue, 0, len(failedRecent)+len(completeDownloads)+len(deferred))
+	rowsForTitles = append(rowsForTitles, deferred...)
 	rowsForTitles = append(rowsForTitles, failedRecent...)
 	rowsForTitles = append(rowsForTitles, completeDownloads...)
 
 	return gin.H{
-		"FailedDL":        len(failedDownloads),
-		"FailedDownloads": failedRecent,
-		"DoneDownloads":   completeDownloads,
-		"DownloadTitles":  s.getDownloadTitles(ctx, rowsForTitles),
-		"DownloadBookIDs": s.getDownloadBookIDs(ctx, rowsForTitles),
+		"FailedDL":          len(failedDownloads),
+		"FailedDownloads":   failedRecent,
+		"DeferredDownloads": deferred,
+		"DeferredIssues":    deferredIssues,
+		"DoneDownloads":     completeDownloads,
+		"DownloadTitles":    s.getDownloadTitles(ctx, rowsForTitles),
+		"DownloadBookIDs":   s.getDownloadBookIDs(ctx, rowsForTitles),
 	}
 }
 
@@ -1313,6 +1323,7 @@ func (s *Server) handleLibrary(c *gin.Context) {
 		"Total":           total,
 		"Filter":          filter,
 		"Page":            "library",
+		"BookIssues":      s.bookDownloadIssues(ctx, books),
 		"BookActions":     buildLibraryBookActions(books, s.settingBool(ctx, library.SettingKeyAutoQueueNewBooks, false)),
 		"BookPresence":    s.computeBookPresence(ctx, books),
 		"StatusCounts":    counts,
@@ -1614,6 +1625,7 @@ func (s *Server) handleBookDetail(c *gin.Context) {
 
 	data := gin.H{
 		"Book":                    book,
+		"BookIssue":               s.bookDownloadIssues(ctx, []database.Book{*book})[book.ID],
 		"Page":                    "library",
 		"BookFolderPath":          folderPath,
 		"BookFiles":               files,
@@ -2007,6 +2019,12 @@ func (s *Server) handleDownloads(c *gin.Context) {
 	activeStatus := database.DownloadStatusActive
 	active, _ := s.db.ListDownloads(ctx, &activeStatus)
 	pending, _ := database.WaitingDownloads(ctx, s.db)
+	issues := make(map[int64]downloadIssue)
+	for _, item := range pending {
+		if item.Status == database.DownloadStatusDeferred {
+			issues[item.ID] = s.downloadIssue(ctx, item)
+		}
+	}
 	completeStatus := database.DownloadStatusComplete
 	completeAll, _ := s.db.ListDownloads(ctx, &completeStatus)
 	failedStatus := database.DownloadStatusFailed
@@ -2038,6 +2056,7 @@ func (s *Server) handleDownloads(c *gin.Context) {
 		"Complete":            complete,
 		"CompleteTotal":       len(completeAll),
 		"RecentErrors":        recentErrors,
+		"WaitingIssues":       issues,
 		"DownloadTitles":      s.getDownloadTitles(ctx, rowsForTitles),
 		"QueuePaused":         queueState.Paused,
 		"QueuePauseReason":    queueState.Reason,
@@ -2536,12 +2555,15 @@ func destinationLogoPath(t string) string {
 // page render (a handful of LIMIT 1 / len() queries) — for HTMX fragment
 // responses the value is omitted since base.html isn't part of the swap.
 type sidebarData struct {
-	NewBooks        int
-	ActiveDL        int
-	FailedDestAlert int
-	Version         string
-	Uptime          string
-	Healthy         bool // true when no failed destinations and Audible auth is good
+	NewBooks          int
+	ActiveDL          int
+	FailedDestAlert   int
+	Version           string
+	Uptime            string
+	Healthy           bool
+	ThrottledAccounts int
+	FailedDownloads   int
+	StatusUnavailable bool
 }
 
 // computeSidebar gathers the fields the sidebar template renders. Cheap
@@ -2577,7 +2599,13 @@ func (s *Server) computeSidebar(ctx context.Context) sidebarData {
 		}
 	}
 
-	out.Healthy = out.FailedDestAlert == 0 && s.audibleAuthenticated()
+	cooldowns, statusErr := s.audibleLicenseCooldowns(ctx)
+	out.ThrottledAccounts = len(cooldowns)
+	failedStatus := database.DownloadStatusFailed
+	failed, downloadErr := s.db.ListDownloads(ctx, &failedStatus)
+	out.FailedDownloads = len(failed)
+	out.StatusUnavailable = statusErr != nil || downloadErr != nil
+	out.Healthy = !out.StatusUnavailable && out.ThrottledAccounts == 0 && out.FailedDownloads == 0 && out.FailedDestAlert == 0 && s.audibleAuthenticated()
 	return out
 }
 
@@ -2710,6 +2738,9 @@ func (s *Server) withSidebar(c *gin.Context, data gin.H) gin.H {
 		data["CurrentUser"] = u
 	}
 	data["Sidebar"] = s.computeSidebar(ctx)
+	cooldowns, statusErr := s.audibleLicenseCooldowns(ctx)
+	data["AccountCooldowns"] = cooldowns
+	data["StatusUnavailable"] = statusErr != nil
 	if s.authMgr != nil && s.authMgr.CurrentMethod(ctx) == auth.AuthMethodNone {
 		data["AuthNagShow"] = true
 	}
@@ -3082,7 +3113,7 @@ func (s *Server) handleSyncStatus(c *gin.Context) {
 // summary for external consumers (e.g. HearthShelf's admin integration card).
 // Unlike handleSyncStatus this emits JSON, not an HTMX fragment, and unlike the
 // full diagnostics compare it stays cheap: sync progress is in-memory and the
-// status counts are a single grouped DB query (no remote inventory fetches).
+// status comes from the database and in-memory sync state, without remote probes.
 func (s *Server) handleSyncStatusJSON(c *gin.Context) {
 	progress := s.sync.GetProgress()
 
@@ -3098,21 +3129,26 @@ func (s *Server) handleSyncStatusJSON(c *gin.Context) {
 		statusCounts[string(status)] = n
 		total += n
 	}
-	// "Failed" books are the actionable health signal an admin should be alerted
-	// to; the full per-destination drift list remains behind /api/diagnostics/compare.
 	failed := counts[database.BookStatusFailed]
+	cooldowns, cooldownErr := s.audibleLicenseCooldowns(c.Request.Context())
+	deferredStatus := database.DownloadStatusDeferred
+	deferred, deferredErr := s.db.ListDownloads(c.Request.Context(), &deferredStatus)
+	statusUnavailable := cooldownErr != nil || deferredErr != nil
 
 	resp := gin.H{
-		"running":       progress.Running,
-		"status":        progress.Status,
-		"message":       progress.Message,
-		"error":         progress.Error,
-		"started_at":    progress.StartedAt,
-		"completed_at":  progress.CompletedAt,
-		"books_total":   total,
-		"books_failed":  failed,
-		"status_counts": statusCounts,
-		"has_issues":    failed > 0 || progress.Error != "",
+		"running":                     progress.Running,
+		"status":                      progress.Status,
+		"message":                     progress.Message,
+		"error":                       progress.Error,
+		"started_at":                  progress.StartedAt,
+		"completed_at":                progress.CompletedAt,
+		"books_total":                 total,
+		"books_failed":                failed,
+		"status_counts":               statusCounts,
+		"audible_account_cooldowns":   cooldowns,
+		"downloads_deferred":          len(deferred),
+		"download_status_unavailable": statusUnavailable,
+		"has_issues":                  failed > 0 || progress.Error != "" || len(cooldowns) > 0 || len(deferred) > 0 || statusUnavailable,
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -4394,6 +4430,7 @@ func (s *Server) handleDeleteBookMedia(c *gin.Context) {
 		_, rowAccounts := s.libraryAccountData(ctx, []database.Book{*book})
 		c.HTML(http.StatusOK, "library_row.html", gin.H{
 			"Book":       book,
+			"BookIssue":  s.bookDownloadIssues(ctx, []database.Book{*book})[book.ID],
 			"BookAction": buildLibraryBookActions([]database.Book{*book}, autoQueueNew)[book.ID],
 			"Presence":   presence[book.ID],
 			"Accounts":   rowAccounts[book.ID],
@@ -4404,6 +4441,7 @@ func (s *Server) handleDeleteBookMedia(c *gin.Context) {
 		folderPath, files := buildBookFileDetails(book.FilePath)
 		c.HTML(http.StatusOK, "book_detail_panel.html", gin.H{
 			"Book":           book,
+			"BookIssue":      s.bookDownloadIssues(ctx, []database.Book{*book})[book.ID],
 			"Page":           "library",
 			"BookFolderPath": folderPath,
 			"BookFiles":      files,

@@ -1,4 +1,20 @@
 {{define "dashboard_downloads.html"}}
+{{if .DeferredDownloads}}
+<div class="section-h">Waiting for Audible <span class="count">{{len .DeferredDownloads}}</span></div>
+<div class="table-wrap">
+    <table class="tbl">
+        <thead><tr><th>Title</th><th>Issue / automatic retry</th></tr></thead>
+        <tbody>
+        {{range .DeferredDownloads}}
+        <tr>
+            <td>{{$bookID := index $.DownloadBookIDs .ASIN}}<a href="/library/{{$bookID}}" class="book-detail-link" data-book-id="{{$bookID}}">{{with index $.DownloadTitles .ASIN}}{{.}}{{else}}{{.ASIN}}{{end}}</a></td>
+            <td class="download-issue">{{template "download_issue.html" (index $.DeferredIssues .ID)}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
 {{if .DoneDownloads}}
 <div class="section-h">
     Recent completions <span class="count" id="complete-count">{{len .DoneDownloads}}</span>
