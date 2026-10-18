@@ -339,3 +339,19 @@ func (m *AccountManager) LicenseCooldowns(ctx context.Context) ([]AccountLicense
 	}
 	return result, nil
 }
+
+// AccountNameForBook follows the same owner selection as downloads.
+func (m *AccountManager) AccountNameForBook(ctx context.Context, asin string) string {
+	client := m.ClientForBook(ctx, asin)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for id, accountClient := range m.clients {
+		if accountClient == client {
+			if name := m.names[id]; name != "" {
+				return name
+			}
+			return "Audible account"
+		}
+	}
+	return ""
+}

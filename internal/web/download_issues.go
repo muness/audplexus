@@ -83,16 +83,7 @@ func (s *Server) handleAudibleAccountStatus(c *gin.Context) {
 func (s *Server) downloadIssue(ctx context.Context, item database.DownloadQueue) downloadIssue {
 	issue := issueForDownload(item)
 	if issue.Deferred && s.accounts != nil {
-		owner, _ := s.db.GetBookAccount(ctx, item.ASIN)
-		if owner == "" {
-			owner = s.accounts.PrimaryAccountID()
-		}
-		for _, account := range s.accounts.EnabledAccounts() {
-			if account.ID == owner {
-				issue.AccountName = account.Name
-				break
-			}
-		}
+		issue.AccountName = s.accounts.AccountNameForBook(ctx, item.ASIN)
 	}
 	return issue
 }

@@ -127,6 +127,7 @@ type PipelineStateItem struct {
 	ASIN         string    `json:"asin"`
 	BookID       int64     `json:"book_id"`
 	Title        string    `json:"title,omitempty"`
+	AccountName  string    `json:"account_name,omitempty"`
 	Deferred     bool      `json:"deferred,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	Stage        string    `json:"stage"`
@@ -533,15 +534,20 @@ func (dm *DownloadManager) PipelineSnapshot(ctx context.Context) PipelineSnapsho
 		if b, err := dm.db.GetBook(ctx, p.BookID); err == nil && b != nil && b.Title != "" {
 			title = b.Title
 		}
+		accountName := ""
+		if dm.accounts != nil {
+			accountName = dm.accounts.AccountNameForBook(ctx, p.ASIN)
+		}
 		pendingItems = append(pendingItems, PipelineStateItem{
-			ASIN:      p.ASIN,
-			BookID:    p.BookID,
-			Title:     title,
-			Deferred:  p.Status == database.DownloadStatusDeferred,
-			Error:     errs.CleanForDisplay(p.Error),
-			Stage:     "queued",
-			Progress:  p.Progress,
-			UpdatedAt: p.UpdatedAt,
+			ASIN:        p.ASIN,
+			BookID:      p.BookID,
+			Title:       title,
+			AccountName: accountName,
+			Deferred:    p.Status == database.DownloadStatusDeferred,
+			Error:       errs.CleanForDisplay(p.Error),
+			Stage:       "queued",
+			Progress:    p.Progress,
+			UpdatedAt:   p.UpdatedAt,
 		})
 	}
 	sort.Slice(pendingItems, func(i, j int) bool {
